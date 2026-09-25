@@ -1,7 +1,16 @@
 package com.devicecheck.app
 
 import android.Manifest
+import android.app.ActivityManager
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -10,16 +19,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.*
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,7 +34,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -41,6 +45,7 @@ import com.devicecheck.app.audit.*
 import com.devicecheck.app.nativebridge.NativeProbeCore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -53,40 +58,39 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
-                DeviceCheckProHUD()
+                DeviceCheckAppRoot()
             }
         }
     }
 }
 
-// Visual Theme Palette
-private val VoidBlack = Color(0xFF040711)
-private val SurfaceDark = Color(0xFF090E1A)
-private val CardBg = Color(0xFF0E1626)
-private val NeonCyan = Color(0xFF00F0FF)
-private val NeonGreen = Color(0xFF00FF88)
-private val NeonRed = Color(0xFFFF3366)
-private val NeonAmber = Color(0xFFFFB800)
-private val TextSlate = Color(0xFF64748B)
-private val TextLight = Color(0xFFF1F5F9)
+// Executive Dark Theme Palette
+private val BgDark = Color(0xFF090D16)
+private val CardSurface = Color(0xFF111726)
+private val BorderSubtle = Color(0xFF1E293B)
+private val AccentBlue = Color(0xFF38BDF8)
+private val AccentGreen = Color(0xFF10B981)
+private val AccentPurple = Color(0xFF818CF8)
+private val TextMuted = Color(0xFF94A3B8)
+private val TextPrimary = Color(0xFFF8FAFC)
 
-enum class FilterCategory(val label: String) {
-    ALL("ALL VECTORS"),
-    FLAGS("DISCREPANCIES"),
-    SILICON("SILICON / GPU"),
-    NETWORK("NET & DNS"),
-    IDENTITY("IDENTITY / DRM")
+enum class AuditTab(val title: String) {
+    DASHBOARD("Live"),
+    SILICON("Silicon & DRM"),
+    OPTICS_DISPLAY("Optics & Panel"),
+    NETWORK_RADIO("Network & Radio"),
+    SYSTEM_IDENTITY("System & Profile")
 }
 
 @Composable
-fun DeviceCheckProHUD() {
+fun DeviceCheckAppRoot() {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
+    var selectedTab by remember { mutableStateOf(AuditTab.DASHBOARD) }
     var permissionsGranted by remember { mutableStateOf(false) }
-    var selectedCategory by remember { mutableStateOf(FilterCategory.ALL) }
 
-    // Live Telemetry States
+    // Static Audit States
     var nonRootReport by remember { mutableStateOf<NonRootTrackerReport?>(null) }
     var identityReport by remember { mutableStateOf<IdentityAuditReport?>(null) }
     var networkReport by remember { mutableStateOf<NonRootNetworkReport?>(null) }
@@ -94,21 +98,63 @@ fun DeviceCheckProHUD() {
     var gnss by remember { mutableStateOf<GnssTelemetry?>(null) }
     var nativeAntiTamper by remember { mutableStateOf("Auditing...") }
 
-    // Dynamic Live Hardware Uptime Ticker
+    // Live Dynamic Telemetry States
     var liveUptimeMs by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
-    var scanTick by remember { mutableIntStateOf(0) }
+    var ramUsedMb by remember { mutableLongStateOf(0L) }
+    var ramTotalMb by remember { mutableLongStateOf(1L) }
+    var liveBatteryMv by remember { mutableIntStateOf(0) }
+    var liveBatteryTemp by remember { mutableFloatStateOf(0f) }
+    var liveBatteryCurrentUa by remember { mutableIntStateOf(0) }
+    var accelX by remember { mutableFloatStateOf(0f) }
+    var accelY by remember { mutableFloatStateOf(0f) }
+    var accelZ by remember { mutableFloatStateOf(9.8f) }
 
-    // Pulsing Heartbeat Radar Animation
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-    val pulseAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.25f,
-        targetValue = 1.0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(900, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "radarPulse"
-    )
+    // Live Sensor Listener (Accelerometer)
+    DisposableEffect(Unit) {
+        val sm = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        val accel = sm?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        val listener = object : SensorEventListener {
+            override fun onSensorChanged(event: SensorEvent?) {
+                if (event != null && event.values.size >= 3) {
+                    accelX = event.values[0]
+                    accelY = event.values[1]
+                    accelZ = event.values[2]
+                }
+            }
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+        }
+        if (accel != null) {
+            sm.registerListener(listener, accel, SensorManager.SENSOR_DELAY_UI)
+        }
+        onDispose {
+            sm?.unregisterListener(listener)
+        }
+    }
+
+    // Live 1000ms Polling Loop (RAM, Battery, Uptime)
+    LaunchedEffect(Unit) {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        val bm = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+        val memInfo = ActivityManager.MemoryInfo()
+
+        while (isActive) {
+            liveUptimeMs = SystemClock.elapsedRealtime()
+
+            // Poll RAM
+            am?.getMemoryInfo(memInfo)
+            ramTotalMb = memInfo.totalMem / (1024 * 1024)
+            ramUsedMb = (memInfo.totalMem - memInfo.availMem) / (1024 * 1024)
+
+            // Poll Battery
+            val batteryIntent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            liveBatteryMv = batteryIntent?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0) ?: 0
+            val tempRaw = batteryIntent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
+            liveBatteryTemp = tempRaw / 10.0f
+            liveBatteryCurrentUa = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW) ?: 0
+
+            delay(1000)
+        }
+    }
 
     fun refreshTelemetry() {
         coroutineScope.launch {
@@ -121,16 +167,7 @@ fun DeviceCheckProHUD() {
                     gnss = GnssConstellationAuditor.audit(context)
                     nativeAntiTamper = NativeProbeCore.auditAntiTamper()
                 }
-                scanTick++
             } catch (_: Throwable) {}
-        }
-    }
-
-    // Dynamic Live 1000ms Polling Loop
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(1000)
-            liveUptimeMs = SystemClock.elapsedRealtime()
         }
     }
 
@@ -158,138 +195,89 @@ fun DeviceCheckProHUD() {
 
     Surface(
         modifier = Modifier.fillMaxSize(),
-        color = VoidBlack
+        color = BgDark
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 14.dp)
-                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp)
         ) {
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
-            // TOP STATUS CONSOLE HEADER
+            // TOP WORKSTATION HEADER
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .clip(CircleShape)
-                            .background(NeonGreen.copy(alpha = pulseAlpha))
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Column {
-                        Text(
-                            text = "DEVICE//CHECK",
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Black,
-                            color = TextLight,
-                            letterSpacing = 1.2.sp
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(AccentGreen)
                         )
+                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "LIVE PRIVACY & HARDWARE RADAR",
-                            fontSize = 9.sp,
+                            text = "DeviceCheck",
+                            fontSize = 20.sp,
                             fontWeight = FontWeight.Bold,
-                            color = NeonCyan,
-                            letterSpacing = 0.8.sp
+                            color = TextPrimary,
+                            letterSpacing = 0.5.sp
                         )
                     }
+                    Text(
+                        text = "${Build.MANUFACTURER.uppercase()} ${Build.MODEL} // API ${Build.VERSION.SDK_INT}",
+                        fontSize = 11.sp,
+                        color = TextMuted,
+                        fontFamily = FontFamily.Monospace
+                    )
                 }
 
                 Button(
                     onClick = { refreshTelemetry() },
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = NeonCyan.copy(alpha = 0.15f),
-                        contentColor = NeonCyan
+                        containerColor = CardSurface,
+                        contentColor = AccentBlue
                     ),
-                    border = BorderStroke(1.dp, NeonCyan.copy(alpha = 0.5f)),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    border = BorderStroke(1.dp, BorderSubtle),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                 ) {
-                    Text("RE-AUDIT", fontSize = 10.sp, fontWeight = FontWeight.Black, letterSpacing = 0.5.sp)
+                    Text("Re-Audit", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
-            // LIVE TELEMETRY STREAM BAR
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = SurfaceDark,
-                border = BorderStroke(1.dp, Color(0x1FFFFFFF)),
-                modifier = Modifier.fillMaxWidth()
+            // REFINED TAB SELECTOR
+            ScrollableTabRow(
+                selectedTabIndex = selectedTab.ordinal,
+                containerColor = Color.Transparent,
+                contentColor = AccentBlue,
+                edgePadding = 0.dp,
+                divider = {},
+                indicator = {}
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = "LIVE UPTIME:",
-                            fontSize = 9.sp,
-                            color = TextSlate,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = formatUptime(liveUptimeMs),
-                            fontSize = 10.sp,
-                            color = NeonGreen,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = "POLL TICK:",
-                            fontSize = 9.sp,
-                            color = TextSlate,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "#$scanTick",
-                            fontSize = 10.sp,
-                            color = NeonCyan,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // INTERACTIVE CATEGORY FILTER PILLS
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                items(FilterCategory.values()) { cat ->
-                    val isSelected = selectedCategory == cat
+                AuditTab.values().forEach { tab ->
+                    val isSelected = selectedTab == tab
                     Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (isSelected) NeonCyan.copy(alpha = 0.18f) else SurfaceDark,
-                        border = BorderStroke(
-                            1.dp,
-                            if (isSelected) NeonCyan else Color(0x1FFFFFFF)
-                        ),
-                        modifier = Modifier.clickable { selectedCategory = cat }
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (isSelected) AccentBlue.copy(alpha = 0.15f) else CardSurface,
+                        border = BorderStroke(1.dp, if (isSelected) AccentBlue.copy(alpha = 0.6f) else BorderSubtle),
+                        modifier = Modifier
+                            .padding(end = 8.dp)
+                            .clickable { selectedTab = tab }
                     ) {
                         Text(
-                            text = cat.label,
-                            fontSize = 9.sp,
-                            fontWeight = if (isSelected) FontWeight.Black else FontWeight.Bold,
-                            color = if (isSelected) NeonCyan else TextSlate,
-                            letterSpacing = 0.5.sp,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            text = tab.title,
+                            fontSize = 11.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (isSelected) AccentBlue else TextMuted,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
                         )
                     }
                 }
@@ -297,260 +285,214 @@ fun DeviceCheckProHUD() {
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // 0. DISCREPANCY MATRIX (FLAGGED VECTORS)
-            nonRootReport?.let { nr ->
-                val discrepancies = mutableListOf<String>()
-                val ua = nr.defaultUserAgent.lowercase()
-                val renderer = nr.gpu.renderer.lowercase()
-                val refresh = nr.supportedRefreshRates
+            // TAB CONTENT CONTAINER
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                when (selectedTab) {
+                    // TAB 1: DYNAMIC LIVE DASHBOARD
+                    AuditTab.DASHBOARD -> {
+                        // Live System Memory Monitor
+                        val ramFraction = if (ramTotalMb > 0) ramUsedMb.toFloat() / ramTotalMb.toFloat() else 0f
+                        val animatedRam by animateFloatAsState(targetValue = ramFraction, animationSpec = tween(500), label = "ram")
 
-                if (ua.contains("pixel") && renderer.contains("adreno")) {
-                    discrepancies.add("GPU SILICON MISMATCH: Profile claims Pixel (Tensor Mali), but physical GPU is Qualcomm Adreno!")
-                }
-                if (ua.contains("pixel") && refresh.contains("144hz")) {
-                    discrepancies.add("DISPLAY PANEL MISMATCH: Pixel hardware caps at 120Hz, but panel supports 144Hz (Motorola Panel)!")
-                }
-                if (ua.contains("pixel") && nr.widevine.systemId == "28917") {
-                    discrepancies.add("WIDEVINE MOTHERBOARD MISMATCH: System ID 28917 is registered to Motorola OEM, not Google!")
-                }
-
-                val hasDiscrepancy = discrepancies.isNotEmpty()
-
-                if (selectedCategory == FilterCategory.ALL || selectedCategory == FilterCategory.FLAGS) {
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = CardBg,
-                        border = BorderStroke(
-                            1.dp,
-                            Brush.linearGradient(
-                                if (hasDiscrepancy) listOf(NeonRed, NeonAmber.copy(0.4f))
-                                else listOf(NeonGreen, NeonCyan.copy(0.4f))
-                            )
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(14.dp)) {
+                        CleanCard(title = "LIVE SYSTEM MEMORY", badge = "DYNAMIC") {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
+                                Text(text = "Physical RAM Load", fontSize = 11.sp, color = TextMuted)
                                 Text(
-                                    text = if (hasDiscrepancy) "🚨 HARDWARE SPOOF ANOMALIES" else "✅ HARDWARE PROFILE VERIFIED",
+                                    text = "$ramUsedMb MB / $ramTotalMb MB (${(ramFraction * 100).toInt()}%)",
                                     fontSize = 11.sp,
-                                    fontWeight = FontWeight.Black,
-                                    color = if (hasDiscrepancy) NeonRed else NeonGreen
+                                    color = TextPrimary,
+                                    fontFamily = FontFamily.Monospace
                                 )
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = if (hasDiscrepancy) NeonRed.copy(0.2f) else NeonGreen.copy(0.2f)
-                                ) {
-                                    Text(
-                                        text = if (hasDiscrepancy) "${discrepancies.size} FLAGS" else "CONSISTENT",
-                                        color = if (hasDiscrepancy) NeonRed else NeonGreen,
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.Black,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
-                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            LinearProgressIndicator(
+                                progress = { animatedRam },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(3.dp)),
+                                color = if (ramFraction > 0.85f) AccentPurple else AccentBlue,
+                                trackColor = CardSurface
+                            )
+                        }
+
+                        // Live Battery PMIC Hardware Stream
+                        CleanCard(title = "LIVE BATTERY FUEL-GAUGE", badge = "PMIC SENSOR") {
+                            MetricRow("Terminal Voltage", "$liveBatteryMv mV")
+                            MetricRow("Cell Temperature", "$liveBatteryTemp °C")
+                            MetricRow("Instantaneous Draw", if (liveBatteryCurrentUa != 0) "${liveBatteryCurrentUa / 1000} mA (${liveBatteryCurrentUa} µA)" else "Standard Idle Draw")
+                            nonRootReport?.let { nr ->
+                                MetricRow("Battery Health", nr.batteryHealth)
+                                MetricRow("Chemistry", nr.batteryTechnology)
+                            }
+                        }
+
+                        // Live 3-Axis IMU Sensor Stream
+                        CleanCard(title = "LIVE 3-AXIS MEMS MOTION VECTOR", badge = "HARDWARE STREAM") {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                AxisMeter(label = "X-AXIS", value = accelX)
+                                AxisMeter(label = "Y-AXIS", value = accelY)
+                                AxisMeter(label = "Z-AXIS", value = accelZ)
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Values stream live from the onboard accelerometer at UI refresh rate.",
+                                fontSize = 10.sp,
+                                color = TextMuted
+                            )
+                        }
+
+                        // Live Clock & Hardware Monotonic Ticks
+                        CleanCard(title = "LIVE HARDWARE MONOTONIC CLOCK", badge = "BOOTTIME") {
+                            MetricRow("System Uptime", formatUptime(liveUptimeMs))
+                            MetricRow("Kernel Boottime Ticks", "${liveUptimeMs / 1000} seconds since cold boot")
+                        }
+                    }
+
+                    // TAB 2: SILICON & HARDWARE CRYPTOGRAPHY
+                    AuditTab.SILICON -> {
+                        nonRootReport?.let { nr ->
+                            CleanCard(title = "GPU ARCHITECTURE & DRIVERS", badge = "OPENGL ES") {
+                                MetricRow("GPU Renderer", nr.gpu.renderer)
+                                MetricRow("GPU Vendor", nr.gpu.vendor)
+                                MetricRow("OpenGL Driver Version", nr.gpu.openGlVersion)
+                                MetricRow("GL Extensions SHA-256", "${nr.gpu.extensionsHash} (${nr.gpu.extensionCount} extensions)")
                             }
 
-                            Spacer(modifier = Modifier.height(6.dp))
+                            CleanCard(title = "WIDEVINE HARDWARE DRM", badge = "TRUSTZONE") {
+                                MetricRow("Security Level", nr.widevine.securityLevel)
+                                MetricRow("Motherboard System ID", nr.widevine.systemId)
+                                MetricRow("DRM Provider", nr.widevine.vendor)
+                                MetricRow("Max Hardware HDCP", nr.widevine.maxHdcpLevel)
+                            }
 
-                            if (hasDiscrepancy) {
-                                discrepancies.forEach { flag ->
-                                    Text(
-                                        text = "• $flag",
-                                        fontSize = 10.sp,
-                                        color = Color(0xFFFCA5A5),
-                                        fontFamily = FontFamily.Monospace,
-                                        modifier = Modifier.padding(vertical = 2.dp)
-                                    )
-                                }
-                            } else {
-                                Text(
-                                    text = "All userland strings, GPU renderer, and optical matrices are coherent.",
-                                    fontSize = 10.sp,
-                                    color = TextSlate
-                                )
+                            CleanCard(title = "MEDIACODEC HARDWARE PIPELINE", badge = "MEDIA DSP") {
+                                MetricRow("Total Codecs Registered", "${nr.codecCount} codecs")
+                                MetricRow("Hardware Decoders", nr.hardwareDecoders.joinToString(", "))
                             }
                         }
                     }
-                    Spacer(modifier = Modifier.height(12.dp))
-                }
-            }
 
-            // 1. SILICON & GPU SECTION
-            nonRootReport?.let { nr ->
-                if (selectedCategory == FilterCategory.ALL || selectedCategory == FilterCategory.SILICON) {
-                    ProHudCard(title = "GPU EGL ENGINE & WIDEVINE CRYPTO", badge = "SILICON TEE", badgeColor = NeonCyan) {
-                        HudMetricRow("EGL Renderer", nr.gpu.renderer, highlight = NeonCyan)
-                        HudMetricRow("Hardware Vendor", nr.gpu.vendor)
-                        HudMetricRow("OpenGL Driver", nr.gpu.openGlVersion)
-                        HudMetricRow("GL Extensions SHA-256", "${nr.gpu.extensionsHash} (${nr.gpu.extensionCount} ext)")
-                        Spacer(modifier = Modifier.height(4.dp))
-                        HudMetricRow("Widevine Security Tier", "[${nr.widevine.securityLevel}] Provider: ${nr.widevine.vendor}")
-                        HudMetricRow("Motherboard System ID", nr.widevine.systemId, highlight = NeonAmber)
-                        HudMetricRow("Hardware HDCP Level", nr.widevine.maxHdcpLevel)
+                    // TAB 3: OPTICS & DISPLAY
+                    AuditTab.OPTICS_DISPLAY -> {
+                        nonRootReport?.let { nr ->
+                            CleanCard(title = "CAMERA SILICON & OPTICAL MATRIX", badge = "OPTICS") {
+                                MetricRow("Rear Sensor Geometry", nr.optics.rearOptics)
+                                MetricRow("Front Sensor Geometry", nr.optics.frontOptics)
+                                MetricRow("Physical Lenses Present", "${nr.optics.totalPhysicalSensors} physical modules")
+                            }
+
+                            CleanCard(title = "DISPLAY PANEL & TIMING", badge = "PANEL") {
+                                MetricRow("Physical Resolution", nr.displayMetrics)
+                                MetricRow("Supported Refresh Rates", nr.supportedRefreshRates)
+                                MetricRow("Color & Dynamic Range", "HDR: ${nr.isHdrSupported} • WideColor: ${nr.isWideColorGamut}")
+                            }
+
+                            CleanCard(title = "AUDIO DAC & DSP CLOCK", badge = "AUDIO") {
+                                MetricRow("Native Output Sample Rate", nr.audioOutputSampleRate)
+                                MetricRow("Hardware Buffer Sizing", nr.audioBufferSize)
+                            }
+                        }
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    // TAB 4: NETWORK & RADIO
+                    AuditTab.NETWORK_RADIO -> {
+                        networkReport?.let { net ->
+                            CleanCard(title = "NETWORK INTERFACE & ROUTING", badge = "NET STACK") {
+                                MetricRow("Primary Interface", net.activeInterface)
+                                MetricRow("Bound IPv4 Address", net.localIpAddress)
+                                MetricRow("Default Gateway", net.defaultGateway)
+                                MetricRow("Interface MTU", net.interfaceMtu)
+                                MetricRow("Virtual Tunnel (VPN)", if (net.isVpnDetected) "Virtual adapter active" else "Direct physical route")
+                            }
+                        }
 
-                    ProHudCard(title = "PHYSICAL OPTICAL LENS MATRIX", badge = "OPTICS MM", badgeColor = NeonGreen) {
-                        HudMetricRow("Rear Primary Sensor", nr.optics.rearOptics, highlight = TextLight)
-                        HudMetricRow("Front Selfie Sensor", nr.optics.frontOptics)
-                        HudMetricRow("Total Physical Lenses", "${nr.optics.totalPhysicalSensors} Individual Modules")
+                        cellular?.let { cell ->
+                            CleanCard(title = "CELLULAR BASEBAND & TELEPHONY", badge = cell.dataNetworkType) {
+                                MetricRow("Radio Firmware", cell.basebandRadio)
+                                MetricRow("SIM Operator", "${cell.simOperatorName} [${cell.simCountryIso}] (${cell.simOperator})")
+                                MetricRow("Registered Network", "${cell.networkOperatorName} [${cell.networkCountryIso}]")
+                                MetricRow("Cell Tower ID (CID)", "${cell.cellTowerId} (TAC: ${cell.trackingAreaCode} | PCI: ${cell.physicalCellId})")
+                                MetricRow("Signal Strength", cell.radioSignalDbm)
+                            }
+                        }
+
+                        gnss?.let { g ->
+                            CleanCard(title = "GNSS SATELLITES & POSITIONING", badge = if (g.isSystemLocationEnabled) "ACTIVE" else "OFF") {
+                                MetricRow("System Location Status", if (g.isSystemLocationEnabled) "Enabled in settings" else "Disabled in settings")
+                                MetricRow("Provider Mode", g.provider)
+                                MetricRow("Coordinates", "Lat: ${"%.5f".format(g.latitude)}, Lng: ${"%.5f".format(g.longitude)} (±${g.accuracyMeters}m)")
+                                MetricRow("Satellites (Fix / View)", "${g.satellitesUsedInFix} used / ${g.satellitesInView} visible")
+                                MetricRow("Constellations", if (g.constellationsActive.isEmpty()) "Searching for satellite locks..." else g.constellationsActive.joinToString(" • "))
+                                MetricRow("Carrier Noise (C/N0)", "${"%.1f".format(g.averageSnrNoiseDbHz)} dB-Hz")
+                            }
+                        }
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    // TAB 5: SYSTEM & IDENTITY (FRAMEWORK VS HARDWARE)
+                    AuditTab.SYSTEM_IDENTITY -> {
+                        CleanCard(title = "FRAMEWORK VS HARDWARE CROSS-EXAMINATION", badge = "COMPARISON") {
+                            MetricRow("Declared User-Agent Model", nonRootReport?.defaultUserAgent?.take(75) ?: "Reading...")
+                            MetricRow("Physical GPU Renderer", nonRootReport?.gpu?.renderer ?: "Reading...")
+                            MetricRow("Widevine Motherboard ID", nonRootReport?.widevine?.systemId ?: "Reading...")
+                            MetricRow("Physical Display Steps", nonRootReport?.supportedRefreshRates ?: "Reading...")
+                            MetricRow("Baseband Transceiver", cellular?.basebandRadio ?: "Reading...")
+                        }
 
-                    ProHudCard(title = "DISPLAY PANEL & AUDIO DSP", badge = "HARDWARE", badgeColor = NeonCyan) {
-                        HudMetricRow("Resolution & Viewport", nr.displayMetrics)
-                        HudMetricRow("Refresh Rate Steps", nr.supportedRefreshRates, highlight = NeonGreen)
-                        HudMetricRow("HDR & Wide Color Gamut", "HDR: ${nr.isHdrSupported} • WideColor: ${nr.isWideColorGamut}")
-                        HudMetricRow("Native Audio Clock", nr.audioOutputSampleRate)
-                        HudMetricRow("DAC Buffer Boundary", nr.audioBufferSize)
-                    }
+                        identityReport?.let { id ->
+                            CleanCard(title = "PERSISTENT IDENTIFIERS", badge = "IDENTITY") {
+                                MetricRow("OS Android ID (SSAID)", id.ssaid)
+                                MetricRow("Google Services (GSF) ID", "${id.gsfId} [${id.gsfStatus}]")
+                            }
+                        }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                        nonRootReport?.let { nr ->
+                            CleanCard(title = "SYSTEM EXTENSIONS & MANIFEST", badge = "ROSTER") {
+                                MetricRow("PackageManager Features", "${nr.systemFeaturesCount} features (SHA: ${nr.systemFeaturesHash})")
+                                MetricRow("Total Hardware Sensors", "${nr.sensorCount} sensors (SHA: ${nr.sensorFingerprintHash})")
+                                MetricRow("Installed Keyboards", nr.installedKeyboards.joinToString("\n"))
+                                MetricRow("System Fonts Fingerprint", "${nr.systemFontCount} fonts (SHA: ${nr.fontRosterHash})")
+                            }
+                        }
 
-                    ProHudCard(title = "SENSOR SILICON ROSTER", badge = "40+ NODES", badgeColor = NeonAmber) {
-                        HudMetricRow("System Feature Manifest", "${nr.systemFeaturesCount} Features (SHA: ${nr.systemFeaturesHash})")
-                        HudMetricRow("Hardware Sensors Roster", "${nr.sensorCount} Sensors (SHA: ${nr.sensorFingerprintHash})")
-                        HudMetricRow("Primary MEMS Sensors", nr.primarySensors.joinToString("\n"))
-                        Spacer(modifier = Modifier.height(4.dp))
-                        HudMetricRow("Registered MediaCodecs", "${nr.codecCount} Codecs (${nr.hardwareDecoders.size} Hardware QTI)")
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    ProHudCard(title = "BATTERY HARDWARE PMIC GAUGES", badge = "LIVE SENSOR", badgeColor = NeonGreen) {
-                        HudMetricRow("Terminal Voltage", nr.batteryVoltageMv, highlight = NeonCyan)
-                        HudMetricRow("Cell Temperature", nr.batteryTemperatureC, highlight = NeonAmber)
-                        HudMetricRow("PMIC Health", nr.batteryHealth)
-                        HudMetricRow("Chemistry", nr.batteryTechnology)
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                }
-            }
-
-            // 2. NETWORK SECTION
-            networkReport?.let { net ->
-                if (selectedCategory == FilterCategory.ALL || selectedCategory == FilterCategory.NETWORK) {
-                    ProHudCard(title = "SOCKET & ROUTE INTEGRITY", badge = "NET STACK", badgeColor = NeonCyan) {
-                        HudMetricRow("Active Physical Adapter", net.activeInterface, highlight = NeonGreen)
-                        HudMetricRow("Bound IPv4 Address", net.localIpAddress)
-                        HudMetricRow("Default Gateway Route", net.defaultGateway)
-                        HudMetricRow("Interface MTU", net.interfaceMtu)
-                        HudMetricRow("Virtual Interface (VPN)", if (net.isVpnDetected) "TUN/WG DETECTED" else "CLEAR (PHYSICAL)")
-                        HudMetricRow("Network Interfaces", net.allNetworkInterfaces.joinToString(" • "))
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                }
-            }
-
-            nonRootReport?.let { nr ->
-                if (selectedCategory == FilterCategory.ALL || selectedCategory == FilterCategory.NETWORK) {
-                    ProHudCard(title = "TRANSPORT CAPABILITIES & USER AGENT", badge = "WEBKIT", badgeColor = NeonCyan) {
-                        HudMetricRow("Active Transports", nr.networkTransports)
-                        HudMetricRow("DNS Resolvers (LinkProps)", nr.dhcpDnsServers)
-                        HudMetricRow("Bandwidth Estimation", nr.linkBandwidthEstimate)
-                        HudMetricRow("Timezone & DST Offset", nr.timezoneDst)
-                        HudMetricRow("Primary System Locale", nr.localeOrder)
-                        HudMetricRow("Default User-Agent", nr.defaultUserAgent, highlight = TextLight)
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                }
-            }
-
-            // 3. IDENTITY SECTION
-            identityReport?.let { id ->
-                if (selectedCategory == FilterCategory.ALL || selectedCategory == FilterCategory.IDENTITY) {
-                    ProHudCard(title = "PERSISTENT TRACKING IDENTIFIERS", badge = "PERSISTENT", badgeColor = NeonGreen) {
-                        HudMetricRow("OS Android ID (SSAID)", id.ssaid, highlight = NeonCyan)
-                        HudMetricRow("Google Services (GSF) ID", "${id.gsfId} [${id.gsfStatus}]", highlight = NeonGreen)
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                }
-            }
-
-            // 4. GNSS SATELLITES SECTION
-            gnss?.let { g ->
-                if (selectedCategory == FilterCategory.ALL || selectedCategory == FilterCategory.NETWORK) {
-                    ProHudCard(
-                        title = "GNSS SATELLITES & INDOOR FIX",
-                        badge = if (g.isMockFlagged) "MOCK DETECTED" else if (g.isSystemLocationEnabled) "ACTIVE" else "LOCATION OFF",
-                        badgeColor = if (g.isMockFlagged) NeonRed else NeonGreen
-                    ) {
-                        HudMetricRow("System Location Switch", if (g.isSystemLocationEnabled) "ENABLED IN SETTINGS" else "DISABLED IN SETTINGS")
-                        HudMetricRow("Positioning Provider", "${g.provider} (Mock Flag: ${if (g.isMockFlagged) "TRUE" else "FALSE"})")
-                        HudMetricRow("Coordinates", "Lat: ${"%.5f".format(g.latitude)}, Lng: ${"%.5f".format(g.longitude)} (±${g.accuracyMeters}m)")
-                        HudMetricRow("Altitude", "${"%.2f".format(g.altitudeMeters)}m")
-                        HudMetricRow("Satellites (Fix / View)", "${g.satellitesUsedInFix} used / ${g.satellitesInView} in view", highlight = NeonGreen)
-                        HudMetricRow("Active Constellations", if (g.constellationsActive.isEmpty()) "Acquiring satellites..." else g.constellationsActive.joinToString(" • "))
-                        HudMetricRow("Avg Carrier Noise (C/N0)", "${"%.1f".format(g.averageSnrNoiseDbHz)} dB-Hz")
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                }
-            }
-
-            // 5. TELEPHONY SECTION
-            cellular?.let { cell ->
-                if (selectedCategory == FilterCategory.ALL || selectedCategory == FilterCategory.IDENTITY) {
-                    ProHudCard(title = "TELEPHONY & BASEBAND RADIO", badge = cell.dataNetworkType, badgeColor = NeonAmber) {
-                        HudMetricRow("App Sandbox IMEI 1", cell.imei1)
-                        HudMetricRow("App Sandbox IMEI 2", cell.imei2)
-                        HudMetricRow("IMSI (Subscriber ID)", cell.imsi)
-                        HudMetricRow("ICCID (SIM Serial)", cell.iccid)
-                        HudMetricRow("SIM Carrier", "${cell.simOperatorName} [${cell.simCountryIso}] (MCC+MNC: ${cell.simOperator})")
-                        HudMetricRow("Network Operator", "${cell.networkOperatorName} [${cell.networkCountryIso}] (${cell.networkOperator})")
-                        HudMetricRow("Live Cell Tower (CID)", "${cell.cellTowerId} (TAC: ${cell.trackingAreaCode} | PCI: ${cell.physicalCellId})")
-                        HudMetricRow("Radio Signal Strength", cell.radioSignalDbm)
-                        HudMetricRow("Baseband Radio Firmware", cell.basebandRadio, highlight = NeonCyan)
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                }
-            }
-
-            // 6. ANTI-TAMPER PROCFS SECTION
-            if (selectedCategory == FilterCategory.ALL || selectedCategory == FilterCategory.FLAGS) {
-                ProHudCard(title = "ANTI-TAMPER & MEMORY MAP SCAN", badge = "PROCFS", badgeColor = NeonCyan) {
-                    nativeAntiTamper.lines().forEach { line ->
-                        val parts = line.split("=", limit = 2)
-                        if (parts.size == 2) HudMetricRow(parts[0], parts[1])
-                        else Text(text = line, fontSize = 10.sp, color = NeonRed, fontFamily = FontFamily.Monospace)
+                        CleanCard(title = "PROCESS MEMORY MAP & INTEGRITY", badge = "PROCFS") {
+                            nativeAntiTamper.lines().forEach { line ->
+                                val parts = line.split("=", limit = 2)
+                                if (parts.size == 2) MetricRow(parts[0], parts[1])
+                                else Text(text = line, fontSize = 10.sp, color = TextMuted, fontFamily = FontFamily.Monospace)
+                            }
+                        }
                     }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(28.dp))
+                Spacer(modifier = Modifier.height(20.dp))
+            }
         }
     }
 }
 
-// Tactical HUD UI Components
+// Clean UI Components
 @Composable
-fun ProHudCard(
+fun CleanCard(
     title: String,
     badge: String,
-    badgeColor: Color,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Surface(
         shape = RoundedCornerShape(14.dp),
-        color = CardBg,
-        border = BorderStroke(
-            1.dp,
-            Brush.linearGradient(
-                listOf(badgeColor.copy(alpha = 0.35f), Color(0x10FFFFFF))
-            )
-        ),
+        color = CardSurface,
+        border = BorderStroke(1.dp, BorderSubtle),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
@@ -562,22 +504,20 @@ fun ProHudCard(
                 Text(
                     text = title,
                     fontSize = 11.sp,
-                    fontWeight = FontWeight.Black,
-                    color = NeonCyan,
-                    letterSpacing = 0.8.sp,
-                    modifier = Modifier.weight(1f)
+                    fontWeight = FontWeight.Bold,
+                    color = AccentBlue,
+                    letterSpacing = 0.5.sp
                 )
                 Surface(
-                    shape = RoundedCornerShape(5.dp),
-                    color = badgeColor.copy(alpha = 0.15f),
-                    border = BorderStroke(0.8.dp, badgeColor.copy(alpha = 0.5f))
+                    shape = RoundedCornerShape(6.dp),
+                    color = CardSurface,
+                    border = BorderStroke(1.dp, BorderSubtle)
                 ) {
                     Text(
                         text = badge,
-                        color = badgeColor,
-                        fontSize = 8.5.sp,
-                        fontWeight = FontWeight.Black,
-                        letterSpacing = 0.4.sp,
+                        color = TextMuted,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                     )
                 }
@@ -589,21 +529,39 @@ fun ProHudCard(
 }
 
 @Composable
-fun HudMetricRow(label: String, value: String, highlight: Color = Color(0xFFCBD5E1)) {
+fun MetricRow(label: String, value: String) {
     Column(modifier = Modifier.padding(vertical = 3.dp)) {
         Text(
-            text = label.uppercase(),
-            fontSize = 9.sp,
-            color = TextSlate,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 0.5.sp
+            text = label,
+            fontSize = 10.sp,
+            color = TextMuted,
+            fontWeight = FontWeight.Medium
         )
         Text(
             text = value,
             fontSize = 11.sp,
-            color = highlight,
+            color = TextPrimary,
+            fontFamily = FontFamily.Monospace
+        )
+    }
+}
+
+@Composable
+fun AxisMeter(label: String, value: Float) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .background(BgDark, RoundedCornerShape(8.dp))
+            .padding(horizontal = 14.dp, vertical = 8.dp)
+    ) {
+        Text(text = label, fontSize = 9.sp, color = TextMuted, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+            text = "%.2f".format(value),
+            fontSize = 12.sp,
+            color = AccentGreen,
             fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.Medium
+            fontWeight = FontWeight.Bold
         )
     }
 }
@@ -612,5 +570,5 @@ private fun formatUptime(ms: Long): String {
     val sec = (ms / 1000) % 60
     val min = (ms / (1000 * 60)) % 60
     val hrs = (ms / (1000 * 60 * 60))
-    return "%02d:%02d:%02d.%03d".format(hrs, min, sec, ms % 1000)
+    return "%02d:%02d:%02d".format(hrs, min, sec)
 }
