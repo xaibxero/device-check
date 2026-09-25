@@ -1,382 +1,207 @@
-package com.devicecheck.app
+package com.devicecheck.app.audit
 
-import android.Manifest
-import android.content.pm.PackageManager
+import android.app.ActivityManager
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.hardware.Sensor
+import android.hardware.SensorManager
+import android.media.AudioManager
+import android.media.MediaCodecList
+import android.net.ConnectivityManager
+import android.os.BatteryManager
 import android.os.Build
-import android.os.Bundle
-import android.os.SystemClock
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
-import com.devicecheck.app.audit.*
-import com.devicecheck.app.nativebridge.NativeProbeCore
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import android.os.Environment
+import android.os.StatFs
+import android.speech.tts.TextToSpeech
+import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
+import android.webkit.WebSettings
+import java.io.File
+import java.security.MessageDigest
+import java.util.Locale
+import java.util.TimeZone
 
-class MainActivity : ComponentActivity() {
+data class NonRootTrackerReport(
+    val gpu: EglGpuTelemetry,
+    val widevine: WidevineTelemetry,
+    val optics: CameraOpticsTelemetry,
+    val systemFeaturesCount: Int,
+    val systemFeaturesHash: String,
+    val sensorCount: Int,
+    val sensorFingerprintHash: String,
+    val primarySensors: List<String>,
+    val codecCount: Int,
+    val hardwareDecoders: List<String>,
+    val displayMetrics: String,
+    val supportedRefreshRates: String,
+    val isHdrSupported: Boolean,
+    val isWideColorGamut: Boolean,
+    val audioOutputSampleRate: String,
+    val audioBufferSize: String,
+    val batteryVoltageMv: String,
+    val batteryTemperatureC: String,
+    val batteryHealth: String,
+    val batteryTechnology: String,
+    val installedKeyboards: List<String>,
+    val ttsEngines: List<String>,
+    val systemFontCount: Int,
+    val fontRosterHash: String,
+    val exactNandFlashBytes: String,
+    val physicalRamBytes: String,
+    val dalvikHeapLimitMb: String,
+    val defaultUserAgent: String,
+    val networkTransports: String,
+    val dhcpDnsServers: String,
+    val linkBandwidthEstimate: String,
+    val localeOrder: String,
+    val timezoneDst: String
+)
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-        GnssConstellationAuditor.startHardwareGps(this)
+object NonRootTrackerAuditor {
 
-        setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
-                DeviceCheckAppRoot()
-            }
-        }
-    }
-}
+    fun audit(context: Context): NonRootTrackerReport {
+        // 1. Headless EGL GPU context (Zero Permissions)
+        val gpuTelemetry = EglGpuAuditor.audit()
 
-@Composable
-fun DeviceCheckAppRoot() {
-    val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
+        // 2. Widevine DRM Hardware Anchor (Zero Permissions)
+        val widevineTelemetry = WidevineDrmAuditor.audit()
 
-    var permissionsGranted by remember { mutableStateOf(false) }
+        // 3. Camera2 Optical Physics (Zero Permissions)
+        val cameraOptics = CameraOpticsAuditor.audit(context)
 
-    // State Collectors
-    var nonRootReport by remember { mutableStateOf<NonRootTrackerReport?>(null) }
-    var identityReport by remember { mutableStateOf<IdentityAuditReport?>(null) }
-    var cellular by remember { mutableStateOf<CellularTelemetry?>(null) }
-    var gnss by remember { mutableStateOf<GnssTelemetry?>(null) }
-    var nativeSerials by remember { mutableStateOf("Auditing...") }
-    var nativeNetwork by remember { mutableStateOf("Auditing...") }
-    var nativeBattery by remember { mutableStateOf("Auditing...") }
-    var nativeAntiTamper by remember { mutableStateOf("Auditing...") }
-    var nativeClocks by remember { mutableStateOf("Auditing...") }
-    var rootGroundTruth by remember { mutableStateOf<RootHardwareGroundTruth?>(null) }
+        // 4. PackageManager System Available Features Hash (Zero Permissions)
+        val pmFeatures = context.packageManager.systemAvailableFeatures
+            .mapNotNull { it.name }
+            .sorted()
+        val pmFeaturesHash = sha256(pmFeatures.joinToString(","))
 
-    fun refreshTelemetry() {
-        coroutineScope.launch {
-            withContext(Dispatchers.IO) {
-                // Non-Root Zero-Permission Commercial Tracker Silhouette
-                nonRootReport = NonRootTrackerAuditor.audit(context)
-                identityReport = IdentityAuditor.audit(context)
-                cellular = CellularRadioAuditor.audit(context)
-                gnss = GnssConstellationAuditor.audit(context)
+        // 5. Sensor Silicon Roster (Zero Permissions)
+        val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        val allSensors = sm.getSensorList(Sensor.TYPE_ALL)
+        val sensorNames = allSensors.map { "${it.name} [${it.vendor} v${it.version}]" }
+        val sensorRosterHash = sha256(sensorNames.joinToString(";"))
+        val primarySensorsList = allSensors.take(4).map { "${it.name} (${it.vendor})" }
 
-                // Native C++ POSIX Layer
-                nativeSerials = NativeProbeCore.auditHardwareSerials()
-                nativeNetwork = NativeProbeCore.auditKernelNetwork()
-                nativeBattery = NativeProbeCore.auditBatteryRegisters()
-                nativeAntiTamper = NativeProbeCore.auditAntiTamper()
-                nativeClocks = NativeProbeCore.auditClocks()
+        // 6. MediaCodec Hardware Silhouette (Zero Permissions)
+        val codecList = MediaCodecList(MediaCodecList.ALL_CODECS)
+        val allCodecs = codecList.codecInfos
+        val hwDecoders = allCodecs.filter { !it.isEncoder && it.name.startsWith("c2.") }
+            .map { it.name }
 
-                // Optional Root Ground Truth (if available)
-                rootGroundTruth = RootProbeEngine.probeGroundTruth()
-            }
-        }
-    }
-
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        permissionsGranted = results.values.all { it }
-        refreshTelemetry()
-    }
-
-    LaunchedEffect(Unit) {
-        val requiredPermissions = arrayOf(
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION,
-            Manifest.permission.READ_PHONE_STATE,
-            Manifest.permission.CAMERA
-        )
-        val allGranted = requiredPermissions.all {
-            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
-        }
-        if (!allGranted) {
-            permissionLauncher.launch(requiredPermissions)
+        // 7. Display Metrics, Refresh Rates, HDR (Zero Permissions)
+        val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            context.display
         } else {
-            permissionsGranted = true
+            @Suppress("DEPRECATION")
+            wm.defaultDisplay
         }
-        refreshTelemetry()
+        val modes = display?.supportedModes ?: emptyArray()
+        val refreshRates = modes.map { "${it.refreshRate.toInt()}Hz (${it.physicalWidth}x${it.physicalHeight})" }.distinct()
+        val displayStr = "${display?.width ?: 0}x${display?.height ?: 0} @ ${display?.refreshRate?.toInt() ?: 0}Hz"
+        val isHdr = display?.isHdr ?: false
+        val isWide = display?.isWideColorGamut ?: false
+
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val sampleRate = audioManager.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE) ?: "48000"
+        val framesPerBuffer = audioManager.getProperty(AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER) ?: "192"
+
+        // 8. Battery Hardware Telemetry (Sticky Intent - Zero Permissions)
+        val batteryIntent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val voltageMv = batteryIntent?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1) ?: -1
+        val tempRaw = batteryIntent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
+        val healthCode = batteryIntent?.getIntExtra(BatteryManager.EXTRA_HEALTH, BatteryManager.BATTERY_HEALTH_UNKNOWN)
+        val tech = batteryIntent?.getStringExtra(BatteryManager.EXTRA_TECHNOLOGY) ?: "Li-ion"
+
+        val healthStr = when (healthCode) {
+            BatteryManager.BATTERY_HEALTH_GOOD -> "GOOD"
+            BatteryManager.BATTERY_HEALTH_OVERHEAT -> "OVERHEAT"
+            BatteryManager.BATTERY_HEALTH_DEAD -> "DEAD"
+            BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE -> "OVER_VOLTAGE"
+            else -> "UNKNOWN"
+        }
+
+        // 9. System Extensions: Keyboards & TTS (Zero Permissions)
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        val keyboards = imm.enabledInputMethodList.map { it.serviceInfo.packageName }
+
+        val tts = TextToSpeech(context, null)
+        val ttsList = tts.engines.map { it.name }
+        tts.shutdown()
+
+        // 10. System Fonts Directory Fingerprint (Zero Permissions)
+        val fontsDir = File("/system/fonts")
+        val fontFiles = fontsDir.list() ?: emptyArray()
+        val fontHash = sha256(fontFiles.sorted().joinToString(","))
+
+        // 11. Storage & Memory Geometry (Zero Permissions)
+        val statFs = StatFs(Environment.getDataDirectory().path)
+        val totalBytes = statFs.totalBytes
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val memInfo = ActivityManager.MemoryInfo()
+        am.getMemoryInfo(memInfo)
+
+        // 12. Default User Agent & System Locales (Zero Permissions)
+        val ua = try { WebSettings.getDefaultUserAgent(context) } catch (_: Exception) { "Standard Android Dalvik/2.1.0" }
+        val tz = TimeZone.getDefault()
+        val dst = if (tz.useDaylightTime()) "DST Supported (In Effect: ${tz.inDaylightTime(java.util.Date())})" else "No DST"
+
+        // 13. Network Unprivileged Capabilities
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val activeNet = cm.activeNetwork
+        val caps = cm.getNetworkCapabilities(activeNet)
+        val linkProps = cm.getLinkProperties(activeNet)
+
+        val transports = mutableListOf<String>()
+        if (caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true) transports.add("WiFi")
+        if (caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) == true) transports.add("Cellular")
+        if (caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true) transports.add("VPN Active")
+
+        val dns = linkProps?.dnsServers?.map { it.hostAddress ?: "" }?.filter { it.isNotBlank() } ?: emptyList()
+        val downBandwidth = caps?.linkDownstreamBandwidthKbps ?: 0
+        val upBandwidth = caps?.linkUpstreamBandwidthKbps ?: 0
+
+        return NonRootTrackerReport(
+            gpu = gpuTelemetry,
+            widevine = widevineTelemetry,
+            optics = cameraOptics,
+            systemFeaturesCount = pmFeatures.size,
+            systemFeaturesHash = pmFeaturesHash.take(16).uppercase(),
+            sensorCount = allSensors.size,
+            sensorFingerprintHash = sensorRosterHash.take(16).uppercase(),
+            primarySensors = primarySensorsList,
+            codecCount = allCodecs.size,
+            hardwareDecoders = hwDecoders.take(4),
+            displayMetrics = displayStr,
+            supportedRefreshRates = refreshRates.joinToString(" • "),
+            isHdrSupported = isHdr,
+            isWideColorGamut = isWide,
+            audioOutputSampleRate = "$sampleRate Hz",
+            audioBufferSize = "$framesPerBuffer frames per buffer",
+            batteryVoltageMv = "$voltageMv mV",
+            batteryTemperatureC = "${tempRaw / 10.0} °C",
+            batteryHealth = healthStr,
+            batteryTechnology = tech,
+            installedKeyboards = keyboards,
+            ttsEngines = ttsList,
+            systemFontCount = fontFiles.size,
+            fontRosterHash = fontHash.take(16).uppercase(),
+            exactNandFlashBytes = "$totalBytes bytes (${totalBytes / (1024 * 1024 * 1024)} GB)",
+            physicalRamBytes = "${memInfo.totalMem} bytes (${"%.2f".format(memInfo.totalMem / (1024.0 * 1024.0 * 1024.0))} GB)",
+            dalvikHeapLimitMb = "${am.memoryClass} MB (Large: ${am.largeMemoryClass} MB)",
+            defaultUserAgent = ua,
+            networkTransports = transports.joinToString(" • ").ifBlank { "Disconnected" },
+            dhcpDnsServers = dns.joinToString(" • ").ifBlank { "Default Gateway" },
+            linkBandwidthEstimate = "Down: ${downBandwidth / 1000} Mbps | Up: ${upBandwidth / 1000} Mbps",
+            localeOrder = Locale.getDefault().toLanguageTag(),
+            timezoneDst = "${tz.id} ($dst)"
+        )
     }
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = Color(0xFF030712)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .padding(horizontal = 16.dp)
-                .verticalScroll(rememberScrollState())
-        ) {
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // App Bar
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text(
-                        text = "DEVICE-CHECK",
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.Black,
-                        color = Color.White,
-                        letterSpacing = 1.sp
-                    )
-                    Text(
-                        text = "TRACKER PERSPECTIVE RADAR",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF00FF88),
-                        letterSpacing = 0.8.sp
-                    )
-                }
-
-                Button(
-                    onClick = { refreshTelemetry() },
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF0284C7),
-                        contentColor = Color.White
-                    ),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
-                ) {
-                    Text("Re-Audit", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // Non-Root Tracker Banner
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = Color(0x330B1120),
-                border = BorderStroke(1.dp, Color(0x3300FF88)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text(
-                        text = "UNPRIVILEGED TRACKER PERSPECTIVE ACTIVE",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Black,
-                        color = Color(0xFF00FF88)
-                    )
-                    Text(
-                        text = "Displaying exact hardware vectors accessible to standard social apps without root.",
-                        fontSize = 10.sp,
-                        color = Color(0xFF94A3B8)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // 1. NON-ROOT: Silicon Sensors & Codec Silhouette
-            nonRootReport?.let { nr ->
-                AuditCard(title = "SENSOR SILICON & MEDIACODEC SILHOUETTE", badge = "ZERO PERM") {
-                    MetricRow("Total Physical Sensors", "${nr.sensorCount} Hardware Sensors")
-                    MetricRow("Sensor Roster SHA-256", nr.sensorFingerprintHash)
-                    MetricRow("Primary Sensor Modules", nr.primarySensors.joinToString("\n"))
-                    Spacer(modifier = Modifier.height(4.dp))
-                    MetricRow("Registered MediaCodecs", "${nr.codecCount} Codecs Registered")
-                    MetricRow("Hardware QTI/SoC Decoders", nr.hardwareDecoders.joinToString(", "))
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // 2. NON-ROOT: Display Modes & Native Audio DAC
-                AuditCard(title = "DISPLAY REFRESH STEPS & AUDIO DAC", badge = "ZERO PERM") {
-                    MetricRow("Physical Viewport", nr.displayMetrics)
-                    MetricRow("Supported Refresh Rates", nr.supportedRefreshRates)
-                    MetricRow("Native Audio DAC Clock", nr.audioOutputSampleRate)
-                    MetricRow("Audio Buffer Sizing", nr.audioBufferSize)
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // 3. NON-ROOT: Battery Hardware Telemetry
-                AuditCard(title = "BATTERY HARDWARE TELEMETRY", badge = "STICKY INTENT") {
-                    MetricRow("Terminal Voltage", nr.batteryVoltageMv)
-                    MetricRow("Battery Temperature", nr.batteryTemperatureC)
-                    MetricRow("Battery Health Status", nr.batteryHealth)
-                    MetricRow("Battery Chemistry", nr.batteryTechnology)
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // 4. NON-ROOT: System Extensions (Keyboards, Fonts, TTS)
-                AuditCard(title = "INSTALLED EXTENSIONS & SYSTEM FONTS", badge = "ZERO PERM") {
-                    MetricRow("Installed Input Keyboards", nr.installedKeyboards.joinToString("\n"))
-                    MetricRow("Text-to-Speech (TTS)", nr.ttsEngines.joinToString(", ").ifBlank { "None" })
-                    MetricRow("System Fonts Directory", "${nr.systemFontCount} font files (Hash: ${nr.fontRosterHash})")
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // 5. NON-ROOT: Storage & Memory Heap Geometry
-                AuditCard(title = "EXACT MEMORY & NAND FLASH GEOMETRY", badge = "ZERO PERM") {
-                    MetricRow("Internal Flash Geometry", nr.exactNandFlashBytes)
-                    MetricRow("Physical RAM Size", nr.physicalRamBytes)
-                    MetricRow("ART Dalvik Heap Allocation", nr.dalvikHeapLimitMb)
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // 6. NON-ROOT: Network, WebSettings & Locale
-                AuditCard(title = "NETWORK CAPABILITIES & USER AGENT", badge = "ACCESS_NET") {
-                    MetricRow("Active Transports", nr.networkTransports)
-                    MetricRow("DNS Servers (LinkProps)", nr.dhcpDnsServers)
-                    MetricRow("Bandwidth Estimation", nr.linkBandwidthEstimate)
-                    MetricRow("Timezone & DST", nr.timezoneDst)
-                    MetricRow("Primary System Locale", nr.localeOrder)
-                    MetricRow("Default WebKit User-Agent", nr.defaultUserAgent)
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-            }
-
-            // 7. Persistent Device Identifiers (GSF & SSAID)
-            identityReport?.let { id ->
-                AuditCard(title = "PERSISTENT DEVICE IDENTIFIERS", badge = "IDENTITY") {
-                    MetricRow("OS Android ID (SSAID)", id.ssaid)
-                    MetricRow("Google Services (GSF) ID", "${id.gsfId} [${id.gsfStatus}]")
-                    rootGroundTruth?.let { root ->
-                        if (root.isRootAvailable) {
-                            MetricRow("Root GSF ID (Query)", root.rootGsfId)
-                            MetricRow("Root Settings SSAID (XML)", root.rootSsaid)
-                            MetricRow("Root Hardware Serial", root.rootSerialNo)
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.height(12.dp))
-            }
-
-            // 8. GNSS Physical Constellations
-            gnss?.let { g ->
-                AuditCard(
-                    title = "GNSS SATELLITE CONSTELLATIONS & NOISE",
-                    badge = if (g.isMockFlagged) "MOCK DETECTED" else "PHYSICAL GNSS",
-                    badgeColor = if (g.isMockFlagged) Color(0xFFF43F5E) else Color(0xFF00FF88)
-                ) {
-                    MetricRow("Location Provider", "${g.provider} (Mock Flag: ${if (g.isMockFlagged) "TRUE" else "FALSE"})")
-                    MetricRow("Coordinates", "Lat: ${"%.5f".format(g.latitude)}, Lng: ${"%.5f".format(g.longitude)} (±${g.accuracyMeters}m)")
-                    MetricRow("Altitude", "${"%.2f".format(g.altitudeMeters)}m")
-                    MetricRow("Satellites (Fix / View)", "${g.satellitesUsedInFix} used / ${g.satellitesInView} in view")
-                    MetricRow("Active Constellations", if (g.constellationsActive.isEmpty()) "Acquiring satellite constellation..." else g.constellationsActive.joinToString(" • "))
-                    MetricRow("Avg Carrier Noise (C/N0)", "${"%.1f".format(g.averageSnrNoiseDbHz)} dB-Hz")
-                }
-                Spacer(modifier = Modifier.height(12.dp))
-            }
-
-            // 9. Telephony & Baseband Status
-            cellular?.let { cell ->
-                AuditCard(title = "TELEPHONY & BASEBAND IDENTIFIERS", badge = cell.dataNetworkType) {
-                    MetricRow("App Sandbox IMEI 1", cell.imei1)
-                    MetricRow("App Sandbox IMEI 2", cell.imei2)
-                    MetricRow("IMSI (Subscriber ID)", cell.imsi)
-                    MetricRow("ICCID (SIM Serial)", cell.iccid)
-                    MetricRow("SIM Carrier", "${cell.simOperatorName} [${cell.simCountryIso}] (MCC+MNC: ${cell.simOperator})")
-                    MetricRow("Network Operator", "${cell.networkOperatorName} [${cell.networkCountryIso}] (${cell.networkOperator})")
-                    MetricRow("Live Cell Tower (CID)", "${cell.cellTowerId} (TAC: ${cell.trackingAreaCode} | PCI: ${cell.physicalCellId})")
-                    MetricRow("Radio Signal Strength", cell.radioSignalDbm)
-                    MetricRow("Baseband Radio Firmware", cell.basebandRadio)
-                }
-                Spacer(modifier = Modifier.height(12.dp))
-            }
-
-            // 10. Native C++ POSIX Kernel Route Audit
-            AuditCard(title = "RAW POSIX KERNEL NETWORK ROUTES", badge = "C++20 NDK") {
-                nativeNetwork.lines().forEach { line ->
-                    val parts = line.split("=", limit = 2)
-                    if (parts.size == 2) MetricRow(parts[0], parts[1])
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // 11. Anti-Tamper Memory Map Scan
-            AuditCard(title = "ANTI-TAMPER & MEMORY MAP SCAN", badge = "PROCFS") {
-                nativeAntiTamper.lines().forEach { line ->
-                    val parts = line.split("=", limit = 2)
-                    if (parts.size == 2) MetricRow(parts[0], parts[1])
-                    else Text(text = line, fontSize = 10.sp, color = Color(0xFFF43F5E), fontFamily = FontFamily.Monospace)
-                }
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
-        }
-    }
-}
-
-@Composable
-fun AuditCard(
-    title: String,
-    badge: String,
-    badgeColor: Color = Color(0xFF00FF88),
-    content: @Composable ColumnScope.() -> Unit
-) {
-    Surface(
-        shape = RoundedCornerShape(18.dp),
-        color = Color(0x330B1120),
-        border = BorderStroke(1.dp, Color(0x1FFFFFFF)),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = title,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFF00E5FF),
-                    letterSpacing = 0.8.sp,
-                    modifier = Modifier.weight(1f)
-                )
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = badgeColor.copy(alpha = 0.15f),
-                    border = BorderStroke(0.8.dp, badgeColor.copy(alpha = 0.4f))
-                ) {
-                    Text(
-                        text = badge,
-                        color = badgeColor,
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Black,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-            content()
-        }
-    }
-}
-
-@Composable
-fun MetricRow(label: String, value: String) {
-    Column(modifier = Modifier.padding(vertical = 2.5.dp)) {
-        Text(text = label, fontSize = 10.sp, color = Color(0xFF64748B), fontWeight = FontWeight.SemiBold)
-        Text(text = value, fontSize = 11.sp, color = Color.White, fontFamily = FontFamily.Monospace)
+    private fun sha256(input: String): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        val bytes = md.digest(input.toByteArray())
+        return bytes.joinToString("") { "%02x".format(it) }
     }
 }
