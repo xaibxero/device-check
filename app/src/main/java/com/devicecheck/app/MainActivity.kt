@@ -13,10 +13,15 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
+import android.net.wifi.WifiInfo
+import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import android.view.InputDevice
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -52,6 +57,107 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+// Embedded Hardware Extensions Data Model
+data class HardwareExtensionsReport(
+    val socManufacturer: String,
+    val socModel: String,
+    val wifiStandard: String,
+    val wifiFrequencyMhz: String,
+    val wifiLinkSpeed: String,
+    val inputDevices: List<String>,
+    val audioOutputTopology: List<String>,
+    val audioInputTopology: List<String>
+)
+
+// Embedded Zero-Permission Hardware Extensions Auditor
+object HardwareExtensionsAuditor {
+    fun audit(context: Context): HardwareExtensionsReport {
+        val socVendor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Build.SOC_MANUFACTURER
+        } else "Qualcomm / Legacy"
+
+        val socChip = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Build.SOC_MODEL
+        } else "Snapdragon / Legacy"
+
+        val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        val wifiInfo: WifiInfo? = try { wm?.connectionInfo } catch (_: Throwable) { null }
+
+        val standardStr = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && wifiInfo != null) {
+            when (wifiInfo.wifiStandard) {
+                6 -> "Wi-Fi 6 / 6E (802.11ax)"
+                5 -> "Wi-Fi 5 (802.11ac)"
+                4 -> "Wi-Fi 4 (802.11n)"
+                7, 8 -> "Wi-Fi 7 (802.11be)"
+                1 -> "Legacy (802.11a/b/g)"
+                else -> "Standard #${wifiInfo.wifiStandard}"
+            }
+        } else "802.11 Multi-Band"
+
+        val freqMhz = wifiInfo?.frequency ?: 0
+        val bandStr = when {
+            freqMhz in 2400..2499 -> "2.4 GHz ($freqMhz MHz)"
+            freqMhz in 4900..5900 -> "5.0 GHz ($freqMhz MHz)"
+            freqMhz > 5925 -> "6.0 GHz ($freqMhz MHz - Wi-Fi 6E/7)"
+            else -> if (freqMhz > 0) "$freqMhz MHz" else "Radio Standby"
+        }
+
+        val linkSpeedStr = if (wifiInfo != null && wifiInfo.linkSpeed > 0) {
+            "${wifiInfo.linkSpeed} ${WifiInfo.LINK_SPEED_UNITS}"
+        } else "Standby"
+
+        val inputDeviceNames = mutableListOf<String>()
+        try {
+            val deviceIds = InputDevice.getDeviceIds()
+            for (id in deviceIds) {
+                val dev = InputDevice.getDevice(id) ?: continue
+                if (!dev.isVirtual) {
+                    inputDeviceNames.add("${dev.name} [Vendor: 0x${"%04x".format(dev.vendorId)} Product: 0x${"%04x".format(dev.productId)}]")
+                }
+            }
+        } catch (_: Throwable) {}
+
+        val audioOutputs = mutableListOf<String>()
+        val audioInputs = mutableListOf<String>()
+        try {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            if (am != null) {
+                val devices = am.getDevices(AudioManager.GET_DEVICES_ALL)
+                for (dev in devices) {
+                    val name = dev.productName.toString()
+                    val typeStr = when (dev.type) {
+                        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Built-in Stereo Speaker"
+                        AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "Earpiece Receiver"
+                        AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Built-in Microphone Array"
+                        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "Bluetooth A2DP Sink"
+                        AudioDeviceInfo.TYPE_USB_DEVICE -> "USB Audio Interface"
+                        AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired Headset"
+                        else -> "Type 0x${dev.type}"
+                    }
+                    if (dev.isSink) audioOutputs.add("$typeStr ($name)")
+                    if (dev.isSource) audioInputs.add("$typeStr ($name)")
+                }
+            }
+        } catch (_: Throwable) {}
+
+        return HardwareExtensionsReport(
+            socManufacturer = socVendor,
+            socModel = socChip,
+            wifiStandard = standardStr,
+            wifiFrequencyMhz = bandStr,
+            wifiLinkSpeed = linkSpeedStr,
+            inputDevices = inputDeviceNames.distinct(),
+            audioOutputTopology = audioOutputs.distinct(),
+            audioInputTopology = audioInputs.distinct()
+        )
+    }
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -113,7 +219,7 @@ fun DeviceCheckAppRoot() {
     var accelY by remember { mutableFloatStateOf(0f) }
     var accelZ by remember { mutableFloatStateOf(9.8f) }
 
-    // 1. Event-Driven Battery Receiver (Eliminates high-frequency polling overhead)
+    // Event-Driven Battery Receiver
     DisposableEffect(context) {
         val bm = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
         val receiver = object : BroadcastReceiver() {
@@ -129,11 +235,11 @@ fun DeviceCheckAppRoot() {
         val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
         context.registerReceiver(receiver, filter)
         onDispose {
-            context.unregisterReceiver(receiver)
+            try { context.unregisterReceiver(receiver) } catch (_: Throwable) {}
         }
     }
 
-    // 2. Live Accelerometer IMU Listener
+    // Live Accelerometer IMU Listener
     DisposableEffect(Unit) {
         val sm = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
         val accel = sm?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
@@ -151,7 +257,7 @@ fun DeviceCheckAppRoot() {
         onDispose { sm?.unregisterListener(listener) }
     }
 
-    // 3. Live 1000ms Polling Loop (RAM & Hardware Clock)
+    // Live 1000ms Polling Loop (RAM & Hardware Clock)
     LaunchedEffect(Unit) {
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         val memInfo = ActivityManager.MemoryInfo()
@@ -249,25 +355,21 @@ fun DeviceCheckAppRoot() {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = {
-                            coroutineScope.launch(Dispatchers.IO) {
-                                val file = CodexMasterExporter.exportSnapshot(
-                                    context = context,
-                                    nonRootReport = nonRootReport,
-                                    identityReport = identityReport,
-                                    networkReport = networkReport,
-                                    cellular = cellular,
-                                    gnss = gnss,
-                                    hardwareExt = hardwareExt,
-                                    nativeAntiTamper = nativeAntiTamper
-                                )
-                                withContext(Dispatchers.Main) {
-                                    if (file != null) {
-                                        CodexMasterExporter.shareSnapshotFile(context, file)
-                                    } else {
-                                        Toast.makeText(context, "Export generation failed", Toast.LENGTH_SHORT).show()
-                                    }
-                                }
+                            val jsonString = generateSnapshotJson(
+                                nonRootReport = nonRootReport,
+                                identityReport = identityReport,
+                                networkReport = networkReport,
+                                cellular = cellular,
+                                gnss = gnss,
+                                hardwareExt = hardwareExt,
+                                nativeAntiTamper = nativeAntiTamper
+                            )
+                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, jsonString)
+                                putExtra(Intent.EXTRA_SUBJECT, "DeviceCheck Hardware Snapshot")
                             }
+                            context.startActivity(Intent.createChooser(shareIntent, "Export Hardware Snapshot JSON"))
                         },
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(
@@ -549,7 +651,7 @@ fun DeviceCheckAppRoot() {
     }
 }
 
-// Reusable Clean UI Components
+// Clean Reusable UI Components
 @Composable
 fun CleanCard(
     title: String,
@@ -649,4 +751,113 @@ private fun formatUptime(ms: Long): String {
     val min = (ms / (1000 * 60)) % 60
     val hrs = (ms / (1000 * 60 * 60))
     return "%02d:%02d:%02d".format(hrs, min, sec)
+}
+
+// Embedded JSON Snapshot Generator
+private fun generateSnapshotJson(
+    nonRootReport: NonRootTrackerReport?,
+    identityReport: IdentityAuditReport?,
+    networkReport: NonRootNetworkReport?,
+    cellular: CellularTelemetry?,
+    gnss: GnssTelemetry?,
+    hardwareExt: HardwareExtensionsReport?,
+    nativeAntiTamper: String
+): String {
+    val root = JSONObject()
+
+    val meta = JSONObject().apply {
+        put("tool", "DeviceCheck Forensic Audit")
+        put("version", "1.0.0")
+        put("timestamp_epoch", System.currentTimeMillis())
+        put("timestamp_iso", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZZZZZ", Locale.US).format(Date()))
+        put("uptime_ms", SystemClock.elapsedRealtime())
+        put("android_release", Build.VERSION.RELEASE)
+        put("sdk_api", Build.VERSION.SDK_INT)
+        put("security_patch", Build.VERSION.SECURITY_PATCH)
+        put("claimed_fingerprint", Build.FINGERPRINT)
+    }
+    root.put("metadata", meta)
+
+    val silicon = JSONObject().apply {
+        put("declared_soc_manufacturer", hardwareExt?.socManufacturer ?: "N/A")
+        put("declared_soc_model", hardwareExt?.socModel ?: "N/A")
+        put("egl_renderer", nonRootReport?.gpu?.renderer ?: "N/A")
+        put("egl_vendor", nonRootReport?.gpu?.vendor ?: "N/A")
+        put("opengl_driver", nonRootReport?.gpu?.openGlVersion ?: "N/A")
+        put("gl_extensions_hash", nonRootReport?.gpu?.extensionsHash ?: "N/A")
+        put("total_hardware_sensors", nonRootReport?.sensorCount ?: 0)
+        put("sensor_roster_hash", nonRootReport?.sensorFingerprintHash ?: "N/A")
+        put("registered_codecs_count", nonRootReport?.codecCount ?: 0)
+        put("hardware_decoders", JSONArray(nonRootReport?.hardwareDecoders ?: emptyList<String>()))
+    }
+    root.put("silicon", silicon)
+
+    val crypto = JSONObject().apply {
+        put("widevine_security_level", nonRootReport?.widevine?.securityLevel ?: "N/A")
+        put("widevine_system_id", nonRootReport?.widevine?.systemId ?: "N/A")
+        put("widevine_vendor", nonRootReport?.widevine?.vendor ?: "N/A")
+        put("widevine_hdcp_level", nonRootReport?.widevine?.maxHdcpLevel ?: "N/A")
+        put("ssaid", identityReport?.ssaid ?: "N/A")
+        put("gsf_id", identityReport?.gsfId ?: "N/A")
+        put("gsf_status", identityReport?.gsfStatus ?: "N/A")
+    }
+    root.put("cryptography_and_identifiers", crypto)
+
+    val opticsDisplay = JSONObject().apply {
+        put("rear_camera_optics", nonRootReport?.optics?.rearOptics ?: "N/A")
+        put("front_camera_optics", nonRootReport?.optics?.frontOptics ?: "N/A")
+        put("display_resolution", nonRootReport?.displayMetrics ?: "N/A")
+        put("supported_refresh_rate_steps", nonRootReport?.supportedRefreshRates ?: "N/A")
+        put("is_hdr_supported", nonRootReport?.isHdrSupported ?: false)
+        put("is_wide_color_gamut", nonRootReport?.isWideColorGamut ?: false)
+        put("audio_dac_sample_rate", nonRootReport?.audioOutputSampleRate ?: "N/A")
+    }
+    root.put("optics_and_display", opticsDisplay)
+
+    val network = JSONObject().apply {
+        put("primary_interface", networkReport?.activeInterface ?: "N/A")
+        put("local_ipv4", networkReport?.localIpAddress ?: "N/A")
+        put("default_gateway", networkReport?.defaultGateway ?: "N/A")
+        put("interface_mtu", networkReport?.interfaceMtu ?: "N/A")
+        put("is_virtual_tunnel_vpn", networkReport?.isVpnDetected ?: false)
+        put("wifi_standard", hardwareExt?.wifiStandard ?: "N/A")
+        put("wifi_frequency", hardwareExt?.wifiFrequencyMhz ?: "N/A")
+        put("wifi_link_speed", hardwareExt?.wifiLinkSpeed ?: "N/A")
+        put("dns_servers", nonRootReport?.dhcpDnsServers ?: "N/A")
+    }
+    root.put("network", network)
+
+    val radio = JSONObject().apply {
+        put("baseband_firmware", cellular?.basebandRadio ?: "N/A")
+        put("sim_operator", cellular?.simOperator ?: "N/A")
+        put("sim_operator_name", cellular?.simOperatorName ?: "N/A")
+        put("sim_country_iso", cellular?.simCountryIso ?: "N/A")
+        put("network_operator_name", cellular?.networkOperatorName ?: "N/A")
+        put("cell_tower_id", cellular?.cellTowerId ?: "N/A")
+        put("signal_dbm", cellular?.radioSignalDbm ?: "N/A")
+        put("network_type", cellular?.dataNetworkType ?: "N/A")
+    }
+    root.put("telephony_radio", radio)
+
+    val gnssObj = JSONObject().apply {
+        put("system_location_enabled", gnss?.isSystemLocationEnabled ?: false)
+        put("provider", gnss?.provider ?: "N/A")
+        put("is_mock_flagged", gnss?.isMockFlagged ?: false)
+        put("satellites_used_in_fix", gnss?.satellitesUsedInFix ?: 0)
+        put("satellites_in_view", gnss?.satellitesInView ?: 0)
+        put("active_constellations", JSONArray(gnss?.constellationsActive ?: emptyList<String>()))
+        put("avg_carrier_noise_dbhz", gnss?.averageSnrNoiseDbHz ?: 0f)
+    }
+    root.put("gnss_satellites", gnssObj)
+
+    val peripherals = JSONObject().apply {
+        put("input_controllers", JSONArray(hardwareExt?.inputDevices ?: emptyList<String>()))
+        put("audio_outputs", JSONArray(hardwareExt?.audioOutputTopology ?: emptyList<String>()))
+        put("audio_inputs", JSONArray(hardwareExt?.audioInputTopology ?: emptyList<String>()))
+    }
+    root.put("hardware_peripherals", peripherals)
+
+    root.put("anti_tamper_procfs", nativeAntiTamper)
+
+    return root.toString(2)
 }
