@@ -5,7 +5,6 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
-import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -27,14 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import com.devicecheck.app.audit.CellularRadioAuditor
-import com.devicecheck.app.audit.CellularTelemetry
-import com.devicecheck.app.audit.GnssConstellationAuditor
-import com.devicecheck.app.audit.GnssTelemetry
-import com.devicecheck.app.audit.IdentityAuditReport
-import com.devicecheck.app.audit.IdentityAuditor
-import com.devicecheck.app.audit.RootHardwareGroundTruth
-import com.devicecheck.app.audit.RootProbeEngine
+import com.devicecheck.app.audit.*
 import com.devicecheck.app.nativebridge.NativeProbeCore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -62,27 +54,31 @@ fun DeviceCheckAppRoot() {
 
     var permissionsGranted by remember { mutableStateOf(false) }
 
+    var nonRootReport by remember { mutableStateOf<NonRootTrackerReport?>(null) }
+    var identityReport by remember { mutableStateOf<IdentityAuditReport?>(null) }
+    var cellular by remember { mutableStateOf<CellularTelemetry?>(null) }
+    var gnss by remember { mutableStateOf<GnssTelemetry?>(null) }
     var nativeSerials by remember { mutableStateOf("Auditing...") }
     var nativeNetwork by remember { mutableStateOf("Auditing...") }
     var nativeBattery by remember { mutableStateOf("Auditing...") }
     var nativeAntiTamper by remember { mutableStateOf("Auditing...") }
     var nativeClocks by remember { mutableStateOf("Auditing...") }
-    var cellular by remember { mutableStateOf<CellularTelemetry?>(null) }
-    var gnss by remember { mutableStateOf<GnssTelemetry?>(null) }
-    var identityReport by remember { mutableStateOf<IdentityAuditReport?>(null) }
     var rootGroundTruth by remember { mutableStateOf<RootHardwareGroundTruth?>(null) }
 
     fun refreshTelemetry() {
         coroutineScope.launch {
             withContext(Dispatchers.IO) {
+                nonRootReport = NonRootTrackerAuditor.audit(context)
+                identityReport = IdentityAuditor.audit(context)
+                cellular = CellularRadioAuditor.audit(context)
+                gnss = GnssConstellationAuditor.audit(context)
+
                 nativeSerials = NativeProbeCore.auditHardwareSerials()
                 nativeNetwork = NativeProbeCore.auditKernelNetwork()
                 nativeBattery = NativeProbeCore.auditBatteryRegisters()
                 nativeAntiTamper = NativeProbeCore.auditAntiTamper()
                 nativeClocks = NativeProbeCore.auditClocks()
-                cellular = CellularRadioAuditor.audit(context)
-                gnss = GnssConstellationAuditor.audit(context)
-                identityReport = IdentityAuditor.audit(context)
+
                 rootGroundTruth = RootProbeEngine.probeGroundTruth()
             }
         }
@@ -127,7 +123,7 @@ fun DeviceCheckAppRoot() {
         ) {
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Header
+            // App Bar
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -142,11 +138,11 @@ fun DeviceCheckAppRoot() {
                         letterSpacing = 1.sp
                     )
                     Text(
-                        text = "${Build.MANUFACTURER.uppercase()} ${Build.MODEL} // API ${Build.VERSION.SDK_INT}",
+                        text = "NON-ROOT FINGERPRINT RADAR",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF00FF88),
-                        fontFamily = FontFamily.Monospace
+                        letterSpacing = 0.8.sp
                     )
                 }
 
@@ -165,83 +161,131 @@ fun DeviceCheckAppRoot() {
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Root Status Banner
-            rootGroundTruth?.let { root ->
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = Color(0x330B1120),
-                    border = BorderStroke(1.dp, if (root.isRootAvailable) Color(0x4400FF88) else Color(0x44F43F5E)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                text = if (root.isRootAvailable) "ROOT ENGINE: ACTIVE (GROUND TRUTH ON)" else "SANDBOX RESTRICTED MODE",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Black,
-                                color = if (root.isRootAvailable) Color(0xFF00FF88) else Color(0xFFF43F5E)
-                            )
-                            Text(
-                                text = "SELinux: ${root.selinuxMode} • Permissions: ${if (permissionsGranted) "Granted" else "Partial"}",
-                                fontSize = 10.sp,
-                                color = Color(0xFF94A3B8),
-                                fontFamily = FontFamily.Monospace
-                            )
-                        }
-                    }
+            // Non-Root Tracker Banner
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = Color(0x330B1120),
+                border = BorderStroke(1.dp, Color(0x3300FF88)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        text = "COMMERCIAL TRACKER SURFACE: ACTIVE",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Black,
+                        color = Color(0xFF00FF88)
+                    )
+                    Text(
+                        text = "Capturing GPU EGL strings, Widevine hardware ID, optical physics, and system feature rosters accessible to social apps without root.",
+                        fontSize = 10.sp,
+                        color = Color(0xFF94A3B8)
+                    )
                 }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 1. Telephony & Cellular Matrix
-            cellular?.let { cell ->
-                AuditCard(title = "TELEPHONY & BASEBAND IDENTIFIERS", badge = cell.dataNetworkType) {
-                    MetricRow("App Sandbox IMEI 1", cell.imei1)
-                    MetricRow("App Sandbox IMEI 2", cell.imei2)
-                    MetricRow("Root Ground Truth IMEI", rootGroundTruth?.rootImei ?: "Awaiting root...")
-                    MetricRow("IMSI (Subscriber ID)", cell.imsi)
-                    MetricRow("ICCID (SIM Serial)", cell.iccid)
-                    MetricRow("SIM Carrier", "${cell.simOperatorName} [${cell.simCountryIso}] (MCC+MNC: ${cell.simOperator})")
-                    MetricRow("Network Operator", "${cell.networkOperatorName} [${cell.networkCountryIso}] (${cell.networkOperator})")
-                    MetricRow("Live Cell Tower (CID)", "${cell.cellTowerId} (TAC: ${cell.trackingAreaCode} | PCI: ${cell.physicalCellId})")
-                    MetricRow("Radio Signal Strength", cell.radioSignalDbm)
-                    MetricRow("Baseband Radio Firmware", cell.basebandRadio)
+            nonRootReport?.let { nr ->
+                // 1. GPU EGL & Widevine DRM Hardware Anchors
+                AuditCard(title = "GPU EGL STRINGS & WIDEVINE CRYPTO", badge = "ZERO PERM") {
+                    MetricRow("GPU EGL Renderer", nr.gpu.renderer)
+                    MetricRow("GPU Hardware Vendor", nr.gpu.vendor)
+                    MetricRow("OpenGL Driver Version", nr.gpu.openGlVersion)
+                    MetricRow("GL Extensions SHA-256", "${nr.gpu.extensionsHash} (${nr.gpu.extensionCount} extensions)")
+                    Spacer(modifier = Modifier.height(4.dp))
+                    MetricRow("Widevine Security Tier", "[${nr.widevine.securityLevel}] Vendor: ${nr.widevine.vendor}")
+                    MetricRow("Widevine Motherboard ID", nr.widevine.systemId)
+                    MetricRow("Max Hardware HDCP", nr.widevine.maxHdcpLevel)
                 }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // 2. Camera2 Physical Optical Matrix (No Camera Permission)
+                AuditCard(title = "PHYSICAL OPTICAL MATRIX (ZERO PERM)", badge = "HARDWARE") {
+                    MetricRow("Rear Physical Sensor", nr.optics.rearOptics)
+                    MetricRow("Front Physical Sensor", nr.optics.frontOptics)
+                    MetricRow("Total Physical Lenses", "${nr.optics.totalPhysicalSensors} Individual Lenses")
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // 3. System Features & Sensor Silicon Roster
+                AuditCard(title = "SYSTEM FEATURES & SENSOR SILICON", badge = "COMBINATORIAL") {
+                    MetricRow("PackageManager Features", "${nr.systemFeaturesCount} Features (SHA-256: ${nr.systemFeaturesHash})")
+                    MetricRow("Total Hardware Sensors", "${nr.sensorCount} Sensors (SHA-256: ${nr.sensorFingerprintHash})")
+                    MetricRow("Primary Sensor Modules", nr.primarySensors.joinToString("\n"))
+                    Spacer(modifier = Modifier.height(4.dp))
+                    MetricRow("Registered MediaCodecs", "${nr.codecCount} Codecs (${nr.hardwareDecoders.size} QTI Decoders)")
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // 4. Display Cutout, Refresh Steps & Audio DAC
+                AuditCard(title = "DISPLAY REFRESH STEPS & AUDIO DAC", badge = "ZERO PERM") {
+                    MetricRow("Physical Viewport", nr.displayMetrics)
+                    MetricRow("Supported Refresh Rates", nr.supportedRefreshRates)
+                    MetricRow("HDR & Wide Color Gamut", "HDR: ${nr.isHdrSupported} • WideColor: ${nr.isWideColorGamut}")
+                    MetricRow("Native Audio DAC Clock", nr.audioOutputSampleRate)
+                    MetricRow("Audio Buffer Sizing", nr.audioBufferSize)
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // 5. Battery Hardware Telemetry
+                AuditCard(title = "BATTERY HARDWARE TELEMETRY", badge = "STICKY INTENT") {
+                    MetricRow("Terminal Voltage", nr.batteryVoltageMv)
+                    MetricRow("Battery Temperature", nr.batteryTemperatureC)
+                    MetricRow("Battery Health Status", nr.batteryHealth)
+                    MetricRow("Battery Chemistry", nr.batteryTechnology)
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // 6. System Extensions & Fonts
+                AuditCard(title = "INSTALLED EXTENSIONS & FONTS", badge = "ZERO PERM") {
+                    MetricRow("Installed Input Keyboards", nr.installedKeyboards.joinToString("\n"))
+                    MetricRow("Text-to-Speech (TTS)", nr.ttsEngines.joinToString(", ").ifBlank { "None" })
+                    MetricRow("System Fonts Directory", "${nr.systemFontCount} font files (SHA-256: ${nr.fontRosterHash})")
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // 7. Storage & Memory Geometry
+                AuditCard(title = "EXACT MEMORY & NAND FLASH GEOMETRY", badge = "ZERO PERM") {
+                    MetricRow("Internal Flash Geometry", nr.exactNandFlashBytes)
+                    MetricRow("Physical RAM Size", nr.physicalRamBytes)
+                    MetricRow("ART Dalvik Heap Allocation", nr.dalvikHeapLimitMb)
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // 8. Network Capabilities & User Agent
+                AuditCard(title = "NETWORK CAPABILITIES & USER AGENT", badge = "ACCESS_NET") {
+                    MetricRow("Active Transports", nr.networkTransports)
+                    MetricRow("DNS Servers (LinkProps)", nr.dhcpDnsServers)
+                    MetricRow("Bandwidth Estimation", nr.linkBandwidthEstimate)
+                    MetricRow("Timezone & DST", nr.timezoneDst)
+                    MetricRow("Primary System Locale", nr.localeOrder)
+                    MetricRow("Default WebKit User-Agent", nr.defaultUserAgent)
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // 2. Hardware Serials, GSF & Silicon Storage
-            AuditCard(title = "RAW SILICON, STORAGE & HARDWARE SERIALS", badge = "CROSS-LAYER") {
-                identityReport?.let { id ->
+            // 9. Persistent Identifiers (GSF & SSAID)
+            identityReport?.let { id ->
+                AuditCard(title = "PERSISTENT DEVICE IDENTIFIERS", badge = "IDENTITY") {
                     MetricRow("OS Android ID (SSAID)", id.ssaid)
                     MetricRow("Google Services (GSF) ID", "${id.gsfId} [${id.gsfStatus}]")
-                } ?: run {
-                    MetricRow("OS Android ID (SSAID)", "Auditing...")
-                    MetricRow("Google Services (GSF) ID", "Auditing...")
                 }
-                MetricRow("Root GSF ID (Service Query)", rootGroundTruth?.rootGsfId ?: "Querying...")
-                MetricRow("Root Settings SSAID (XML)", rootGroundTruth?.rootSsaid ?: "Querying...")
-                MetricRow("Root Hardware Serial", rootGroundTruth?.rootSerialNo ?: "Querying...")
-                MetricRow("Storage Hardware Serial", rootGroundTruth?.rawStorageSerial ?: "Querying...")
-                nativeSerials.lines().forEach { line ->
-                    val parts = line.split("=", limit = 2)
-                    if (parts.size == 2) MetricRow(parts[0], parts[1])
-                }
+                Spacer(modifier = Modifier.height(12.dp))
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // 3. Raw GNSS Satellites
+            // 10. GNSS Physical Constellations
             gnss?.let { g ->
                 AuditCard(
                     title = "GNSS SATELLITE CONSTELLATIONS & NOISE",
-                    badge = if (g.isMockFlagged) "MOCK FLAGGED" else "PHYSICAL GNSS",
+                    badge = if (g.isMockFlagged) "MOCK DETECTED" else "PHYSICAL GNSS",
                     badgeColor = if (g.isMockFlagged) Color(0xFFF43F5E) else Color(0xFF00FF88)
                 ) {
                     MetricRow("Location Provider", "${g.provider} (Mock Flag: ${if (g.isMockFlagged) "TRUE" else "FALSE"})")
@@ -251,12 +295,27 @@ fun DeviceCheckAppRoot() {
                     MetricRow("Active Constellations", if (g.constellationsActive.isEmpty()) "Acquiring satellite constellation..." else g.constellationsActive.joinToString(" • "))
                     MetricRow("Avg Carrier Noise (C/N0)", "${"%.1f".format(g.averageSnrNoiseDbHz)} dB-Hz")
                 }
+                Spacer(modifier = Modifier.height(12.dp))
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            // 11. Telephony & Baseband Status
+            cellular?.let { cell ->
+                AuditCard(title = "TELEPHONY & BASEBAND IDENTIFIERS", badge = cell.dataNetworkType) {
+                    MetricRow("App Sandbox IMEI 1", cell.imei1)
+                    MetricRow("App Sandbox IMEI 2", cell.imei2)
+                    MetricRow("IMSI (Subscriber ID)", cell.imsi)
+                    MetricRow("ICCID (SIM Serial)", cell.iccid)
+                    MetricRow("SIM Carrier", "${cell.simOperatorName} [${cell.simCountryIso}] (MCC+MNC: ${cell.simOperator})")
+                    MetricRow("Network Operator", "${cell.networkOperatorName} [${cell.networkCountryIso}] (${cell.networkOperator})")
+                    MetricRow("Live Cell Tower (CID)", "${cell.cellTowerId} (TAC: ${cell.trackingAreaCode} | PCI: ${cell.physicalCellId})")
+                    MetricRow("Radio Signal Strength", cell.radioSignalDbm)
+                    MetricRow("Baseband Radio Firmware", cell.basebandRadio)
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+            }
 
-            // 4. Kernel Network Routes
-            AuditCard(title = "KERNEL NETWORK ROUTES & ARP TABLE", badge = "SOCKET LAYER") {
+            // 12. Native C++ POSIX Kernel Route Audit
+            AuditCard(title = "RAW POSIX KERNEL NETWORK ROUTES", badge = "C++20 NDK") {
                 nativeNetwork.lines().forEach { line ->
                     val parts = line.split("=", limit = 2)
                     if (parts.size == 2) MetricRow(parts[0], parts[1])
@@ -265,31 +324,12 @@ fun DeviceCheckAppRoot() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 5. Fuel-Gauge Micro-Registers
-            AuditCard(title = "BATTERY FUEL-GAUGE MICRO-REGISTERS", badge = "PMIC SYSFS") {
-                MetricRow("Sandbox sysfs Access", nativeBattery)
-                MetricRow("Root PMIC Feed", rootGroundTruth?.rawBatteryUevent ?: "Querying...")
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // 6. Anti-Tamper & Memory Maps
+            // 13. Anti-Tamper Memory Map Scan
             AuditCard(title = "ANTI-TAMPER & MEMORY MAP SCAN", badge = "PROCFS") {
                 nativeAntiTamper.lines().forEach { line ->
                     val parts = line.split("=", limit = 2)
                     if (parts.size == 2) MetricRow(parts[0], parts[1])
                     else Text(text = line, fontSize = 10.sp, color = Color(0xFFF43F5E), fontFamily = FontFamily.Monospace)
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // 7. Temporal Clocks & Drift
-            AuditCard(title = "TEMPORAL CLOCK SYNCHRONIZATION", badge = "POSIX CLOCKS") {
-                MetricRow("Monotonic Uptime", "${SystemClock.elapsedRealtime()} ms")
-                nativeClocks.lines().forEach { line ->
-                    val parts = line.split("=", limit = 2)
-                    if (parts.size == 2) MetricRow(parts[0], parts[1])
                 }
             }
 
