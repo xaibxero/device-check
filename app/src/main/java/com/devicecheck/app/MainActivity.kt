@@ -1,12 +1,16 @@
 package com.devicecheck.app
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -22,10 +26,13 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.devicecheck.app.audit.CellularRadioAuditor
 import com.devicecheck.app.audit.CellularTelemetry
 import com.devicecheck.app.audit.GnssConstellationAuditor
 import com.devicecheck.app.audit.GnssTelemetry
+import com.devicecheck.app.audit.RootHardwareGroundTruth
+import com.devicecheck.app.audit.RootProbeEngine
 import com.devicecheck.app.nativebridge.NativeProbeCore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -40,17 +47,20 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
-                DeviceCheckMasterUI()
+                DeviceCheckAppRoot()
             }
         }
     }
 }
 
 @Composable
-fun DeviceCheckMasterUI() {
+fun DeviceCheckAppRoot() {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
+    var permissionsGranted by remember { mutableStateOf(false) }
+
+    // Telemetry states
     var nativeSerials by remember { mutableStateOf("Auditing...") }
     var nativeNetwork by remember { mutableStateOf("Auditing...") }
     var nativeBattery by remember { mutableStateOf("Auditing...") }
@@ -59,8 +69,9 @@ fun DeviceCheckMasterUI() {
     var cellular by remember { mutableStateOf<CellularTelemetry?>(null) }
     var gnss by remember { mutableStateOf<GnssTelemetry?>(null) }
     var ssaid by remember { mutableStateOf("Reading...") }
+    var rootGroundTruth by remember { mutableStateOf<RootHardwareGroundTruth?>(null) }
 
-    fun refreshAll() {
+    fun refreshTelemetry() {
         coroutineScope.launch {
             withContext(Dispatchers.IO) {
                 nativeSerials = NativeProbeCore.auditHardwareSerials()
@@ -71,12 +82,35 @@ fun DeviceCheckMasterUI() {
                 cellular = CellularRadioAuditor.audit(context)
                 gnss = GnssConstellationAuditor.audit(context)
                 ssaid = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "N/A"
+                rootGroundTruth = RootProbeEngine.probeGroundTruth()
             }
         }
     }
 
+    // Permission dispatcher
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        permissionsGranted = results.values.all { it }
+        refreshTelemetry()
+    }
+
     LaunchedEffect(Unit) {
-        refreshAll()
+        val requiredPermissions = arrayOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.READ_PHONE_STATE,
+            Manifest.permission.CAMERA
+        )
+        val allGranted = requiredPermissions.all {
+            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+        }
+        if (!allGranted) {
+            permissionLauncher.launch(requiredPermissions)
+        } else {
+            permissionsGranted = true
+        }
+        refreshTelemetry()
     }
 
     Surface(
@@ -93,7 +127,7 @@ fun DeviceCheckMasterUI() {
         ) {
             Spacer(modifier = Modifier.height(12.dp))
 
-            // App Bar
+            // Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -108,7 +142,7 @@ fun DeviceCheckMasterUI() {
                         letterSpacing = 1.sp
                     )
                     Text(
-                        text = "${Build.MANUFACTURER.uppercase()} ${Build.MODEL} // Android ${Build.VERSION.RELEASE}",
+                        text = "${Build.MANUFACTURER.uppercase()} ${Build.MODEL} // API ${Build.VERSION.SDK_INT}",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF00FF88),
@@ -117,7 +151,7 @@ fun DeviceCheckMasterUI() {
                 }
 
                 Button(
-                    onClick = { refreshAll() },
+                    onClick = { refreshTelemetry() },
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Color(0xFF0284C7),
@@ -131,27 +165,61 @@ fun DeviceCheckMasterUI() {
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // 1. Telephony & Cellular Radio Card
-            cellular?.let { cell ->
-                AuditCard(title = "CELLULAR RADIO & TELEPHONY IDENTIFIERS", badge = cell.dataNetworkType) {
-                    MetricRow("IMEI 1", cell.imei1)
-                    MetricRow("IMEI 2", cell.imei2)
-                    MetricRow("MEID", cell.meid)
-                    MetricRow("IMSI (Subscriber)", cell.imsi)
-                    MetricRow("ICCID (SIM Serial)", cell.iccid)
-                    MetricRow("SIM Carrier", "${cell.simOperatorName} [${cell.simCountryIso}] (MCC+MNC: ${cell.simOperator})")
-                    MetricRow("Network Operator", "${cell.networkOperatorName} [${cell.networkCountryIso}] (${cell.networkOperator})")
-                    MetricRow("Cell Tower ID (CID)", "${cell.cellTowerId} (TAC: ${cell.trackingAreaCode} | PCI: ${cell.physicalCellId})")
-                    MetricRow("Radio Signal", cell.radioSignalDbm)
-                    MetricRow("Baseband Radio", cell.basebandRadio)
+            // Root & Privilege Status Banner
+            rootGroundTruth?.let { root ->
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = Color(0x330B1120),
+                    border = BorderStroke(1.dp, if (root.isRootAvailable) Color(0x4400FF88) else Color(0x44F43F5E)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = if (root.isRootAvailable) "ROOT ENGINE: ACTIVE (GROUND TRUTH ON)" else "SANDBOX RESTRICTED MODE",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Black,
+                                color = if (root.isRootAvailable) Color(0xFF00FF88) else Color(0xFFF43F5E)
+                            )
+                            Text(
+                                text = "SELinux: ${root.selinuxMode} • Permissions: ${if (permissionsGranted) "Granted" else "Partial"}",
+                                fontSize = 10.sp,
+                                color = Color(0xFF94A3B8),
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
                 }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 2. Hardware Serials & Silicon Node Card
-            AuditCard(title = "RAW SILICON, STORAGE & HARDWARE SERIALS", badge = "POSIX DIRECT") {
+            // 1. Dual-Layer Telephony Matrix
+            cellular?.let { cell ->
+                AuditCard(title = "TELEPHONY & BASEBAND IDENTIFIERS", badge = cell.dataNetworkType) {
+                    MetricRow("App Sandbox IMEI 1", cell.imei1)
+                    MetricRow("App Sandbox IMEI 2", cell.imei2)
+                    MetricRow("Root Ground Truth IMEI", rootGroundTruth?.rootImei ?: "Awaiting root...")
+                    MetricRow("IMSI (Subscriber ID)", cell.imsi)
+                    MetricRow("ICCID (SIM Serial)", cell.iccid)
+                    MetricRow("SIM Carrier", "${cell.simOperatorName} [${cell.simCountryIso}] (MCC+MNC: ${cell.simOperator})")
+                    MetricRow("Network Operator", "${cell.networkOperatorName} [${cell.networkCountryIso}] (${cell.networkOperator})")
+                    MetricRow("Live Cell Tower (CID)", "${cell.cellTowerId} (TAC: ${cell.trackingAreaCode} | PCI: ${cell.physicalCellId})")
+                    MetricRow("Radio Signal Strength", cell.radioSignalDbm)
+                    MetricRow("Baseband Radio Firmware", cell.basebandRadio)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // 2. Hardware Serials & Silicon Storage
+            AuditCard(title = "RAW SILICON, STORAGE & HARDWARE SERIALS", badge = "CROSS-LAYER") {
                 MetricRow("OS Android ID (SSAID)", ssaid)
+                MetricRow("Storage Hardware Serial", rootGroundTruth?.rawStorageSerial ?: "Querying...")
                 nativeSerials.lines().forEach { line ->
                     val parts = line.split("=", limit = 2)
                     if (parts.size == 2) MetricRow(parts[0], parts[1])
@@ -160,25 +228,25 @@ fun DeviceCheckMasterUI() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 3. Raw GNSS & Satellite Constellation Card
+            // 3. Raw GNSS Satellites
             gnss?.let { g ->
                 AuditCard(
                     title = "GNSS SATELLITE CONSTELLATIONS & NOISE",
-                    badge = if (g.isMockFlagged) "MOCK DETECTED" else "PHYSICAL GNSS",
+                    badge = if (g.isMockFlagged) "MOCK FLAGGED" else "PHYSICAL GNSS",
                     badgeColor = if (g.isMockFlagged) Color(0xFFF43F5E) else Color(0xFF00FF88)
                 ) {
                     MetricRow("Location Provider", "${g.provider} (Mock Flag: ${if (g.isMockFlagged) "TRUE" else "FALSE"})")
                     MetricRow("Coordinates", "Lat: ${"%.5f".format(g.latitude)}, Lng: ${"%.5f".format(g.longitude)} (±${g.accuracyMeters}m)")
                     MetricRow("Altitude", "${"%.2f".format(g.altitudeMeters)}m")
                     MetricRow("Satellites (Fix / View)", "${g.satellitesUsedInFix} used / ${g.satellitesInView} in view")
-                    MetricRow("Active Constellations", if (g.constellationsActive.isEmpty()) "Searching for satellites..." else g.constellationsActive.joinToString(" • "))
+                    MetricRow("Active Constellations", if (g.constellationsActive.isEmpty()) "Acquiring satellites (ensure GPS is ON)..." else g.constellationsActive.joinToString(" • "))
                     MetricRow("Avg Carrier Noise (C/N0)", "${"%.1f".format(g.averageSnrNoiseDbHz)} dB-Hz")
                 }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 4. Kernel Network & Sockets Card
+            // 4. Kernel Network & Socket Routing
             AuditCard(title = "KERNEL NETWORK ROUTES & ARP TABLE", badge = "SOCKET LAYER") {
                 nativeNetwork.lines().forEach { line ->
                     val parts = line.split("=", limit = 2)
@@ -188,14 +256,15 @@ fun DeviceCheckMasterUI() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 5. Battery PMIC Micro-Registers Card
-            AuditCard(title = "BATTERY FUEL-GAUGE MICRO-REGISTERS", badge = "SYSFS RAW") {
-                MetricRow("PMIC Register Feed", nativeBattery)
+            // 5. Fuel-Gauge Micro-Registers
+            AuditCard(title = "BATTERY FUEL-GAUGE MICRO-REGISTERS", badge = "PMIC SYSFS") {
+                MetricRow("Sandbox sysfs Access", nativeBattery)
+                MetricRow("Root PMIC Feed", rootGroundTruth?.rawBatteryUevent ?: "Querying...")
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 6. Anti-Tamper & Memory Map Forensics Card
+            // 6. Anti-Tamper & In-Memory Hooks
             AuditCard(title = "ANTI-TAMPER & MEMORY MAP SCAN", badge = "PROCFS") {
                 nativeAntiTamper.lines().forEach { line ->
                     val parts = line.split("=", limit = 2)
@@ -206,9 +275,9 @@ fun DeviceCheckMasterUI() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 7. Temporal Clocks & Drift Card
+            // 7. Temporal Clocks & Drift
             AuditCard(title = "TEMPORAL CLOCK SYNCHRONIZATION", badge = "POSIX CLOCKS") {
-                MetricRow("Uptime Millis", "${SystemClock.elapsedRealtime()} ms")
+                MetricRow("Monotonic Uptime", "${SystemClock.elapsedRealtime()} ms")
                 nativeClocks.lines().forEach { line ->
                     val parts = line.split("=", limit = 2)
                     if (parts.size == 2) MetricRow(parts[0], parts[1])
