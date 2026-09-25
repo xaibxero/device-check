@@ -52,11 +52,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
-import org.json.JSONObject
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 class MainActivity : ComponentActivity() {
 
@@ -98,7 +93,7 @@ fun DeviceCheckAppRoot() {
     var selectedTab by remember { mutableStateOf(AuditTab.DASHBOARD) }
     var permissionsGranted by remember { mutableStateOf(false) }
 
-    // Static Audit States
+    // Static Audit Reports
     var nonRootReport by remember { mutableStateOf<NonRootTrackerReport?>(null) }
     var identityReport by remember { mutableStateOf<IdentityAuditReport?>(null) }
     var networkReport by remember { mutableStateOf<NonRootNetworkReport?>(null) }
@@ -107,7 +102,7 @@ fun DeviceCheckAppRoot() {
     var hardwareExt by remember { mutableStateOf<HardwareExtensionsReport?>(null) }
     var nativeAntiTamper by remember { mutableStateOf("Auditing...") }
 
-    // Live Dynamic Telemetry States
+    // Dynamic Live Telemetry Streams
     var liveUptimeMs by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     var ramUsedMb by remember { mutableLongStateOf(0L) }
     var ramTotalMb by remember { mutableLongStateOf(1L) }
@@ -134,11 +129,11 @@ fun DeviceCheckAppRoot() {
         val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
         context.registerReceiver(receiver, filter)
         onDispose {
-            try { context.unregisterReceiver(receiver) } catch (_: Throwable) {}
+            context.unregisterReceiver(receiver)
         }
     }
 
-    // 2. Live Accelerometer IMU Listener
+    // 2. Live IMU Accelerometer Stream
     DisposableEffect(Unit) {
         val sm = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
         val accel = sm?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
@@ -156,7 +151,7 @@ fun DeviceCheckAppRoot() {
         onDispose { sm?.unregisterListener(listener) }
     }
 
-    // 3. Live 1000ms Polling Loop (RAM & Hardware Clock)
+    // 3. Live 1000ms Ticker (Memory & Monotonic Ticks)
     LaunchedEffect(Unit) {
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         val memInfo = ActivityManager.MemoryInfo()
@@ -218,9 +213,9 @@ fun DeviceCheckAppRoot() {
                 .navigationBarsPadding()
                 .padding(horizontal = 16.dp)
         ) {
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
-            // TOP WORKSTATION HEADER
+            // EXECUTIVE HEADER
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -230,14 +225,14 @@ fun DeviceCheckAppRoot() {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
                             modifier = Modifier
-                                .size(8.dp)
+                                .size(9.dp)
                                 .clip(CircleShape)
                                 .background(AccentGreen)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = "DeviceCheck",
-                            fontSize = 20.sp,
+                            fontSize = 22.sp,
                             fontWeight = FontWeight.Bold,
                             color = TextPrimary,
                             letterSpacing = 0.5.sp
@@ -245,7 +240,7 @@ fun DeviceCheckAppRoot() {
                     }
                     Text(
                         text = "${Build.MANUFACTURER.uppercase()} ${Build.MODEL} // API ${Build.VERSION.SDK_INT}",
-                        fontSize = 11.sp,
+                        fontSize = 12.sp,
                         color = TextMuted,
                         fontFamily = FontFamily.Monospace
                     )
@@ -254,21 +249,25 @@ fun DeviceCheckAppRoot() {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = {
-                            val jsonString = generateSnapshotJson(
-                                nonRootReport = nonRootReport,
-                                identityReport = identityReport,
-                                networkReport = networkReport,
-                                cellular = cellular,
-                                gnss = gnss,
-                                hardwareExt = hardwareExt,
-                                nativeAntiTamper = nativeAntiTamper
-                            )
-                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, jsonString)
-                                putExtra(Intent.EXTRA_SUBJECT, "DeviceCheck Hardware Snapshot")
+                            coroutineScope.launch(Dispatchers.IO) {
+                                val file = CodexMasterExporter.exportSnapshot(
+                                    context = context,
+                                    nonRootReport = nonRootReport,
+                                    identityReport = identityReport,
+                                    networkReport = networkReport,
+                                    cellular = cellular,
+                                    gnss = gnss,
+                                    hardwareExt = hardwareExt,
+                                    nativeAntiTamper = nativeAntiTamper
+                                )
+                                withContext(Dispatchers.Main) {
+                                    if (file != null) {
+                                        CodexMasterExporter.shareSnapshotFile(context, file)
+                                    } else {
+                                        Toast.makeText(context, "Export generation failed", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
                             }
-                            context.startActivity(Intent.createChooser(shareIntent, "Export Hardware Snapshot JSON"))
                         },
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(
@@ -276,9 +275,9 @@ fun DeviceCheckAppRoot() {
                             contentColor = AccentGreen
                         ),
                         border = BorderStroke(1.dp, BorderSubtle),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp)
                     ) {
-                        Text("Export", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Export", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     }
 
                     Button(
@@ -289,16 +288,16 @@ fun DeviceCheckAppRoot() {
                             contentColor = AccentBlue
                         ),
                         border = BorderStroke(1.dp, BorderSubtle),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp)
                     ) {
-                        Text("Re-Audit", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Re-Audit", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-            // REFINED TAB SELECTOR
+            // TAB NAVIGATION BAR
             ScrollableTabRow(
                 selectedTabIndex = selectedTab.ordinal,
                 containerColor = Color.Transparent,
@@ -311,18 +310,18 @@ fun DeviceCheckAppRoot() {
                     val isSelected = selectedTab == tab
                     Surface(
                         shape = RoundedCornerShape(10.dp),
-                        color = if (isSelected) AccentBlue.copy(alpha = 0.15f) else CardSurface,
-                        border = BorderStroke(1.dp, if (isSelected) AccentBlue.copy(alpha = 0.6f) else BorderSubtle),
+                        color = if (isSelected) AccentBlue.copy(alpha = 0.16f) else CardSurface,
+                        border = BorderStroke(1.dp, if (isSelected) AccentBlue.copy(alpha = 0.65f) else BorderSubtle),
                         modifier = Modifier
                             .padding(end = 8.dp)
                             .clickable { selectedTab = tab }
                     ) {
                         Text(
                             text = tab.title,
-                            fontSize = 11.sp,
+                            fontSize = 12.sp,
                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                             color = if (isSelected) AccentBlue else TextMuted,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                            modifier = Modifier.padding(horizontal = 13.dp, vertical = 8.dp)
                         )
                     }
                 }
@@ -330,14 +329,15 @@ fun DeviceCheckAppRoot() {
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // TAB CONTENT CONTAINER
+            // WORKSTATION SCROLLABLE VIEWPORT
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 when (selectedTab) {
+                    // TAB 1: DYNAMIC LIVE DASHBOARD
                     AuditTab.DASHBOARD -> {
                         val ramFraction = if (ramTotalMb > 0) ramUsedMb.toFloat() / ramTotalMb.toFloat() else 0f
                         val animatedRam by animateFloatAsState(targetValue = ramFraction, animationSpec = tween(500), label = "ram")
@@ -347,21 +347,22 @@ fun DeviceCheckAppRoot() {
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text(text = "Physical RAM Load", fontSize = 11.sp, color = TextMuted)
+                                Text(text = "Physical RAM Load", fontSize = 12.sp, color = TextMuted)
                                 Text(
                                     text = "$ramUsedMb MB / $ramTotalMb MB (${(ramFraction * 100).toInt()}%)",
-                                    fontSize = 11.sp,
+                                    fontSize = 12.5.sp,
                                     color = TextPrimary,
-                                    fontFamily = FontFamily.Monospace
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.SemiBold
                                 )
                             }
-                            Spacer(modifier = Modifier.height(8.dp))
+                            Spacer(modifier = Modifier.height(10.dp))
                             LinearProgressIndicator(
                                 progress = { animatedRam },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(6.dp)
-                                    .clip(RoundedCornerShape(3.dp)),
+                                    .height(7.dp)
+                                    .clip(RoundedCornerShape(3.5.dp)),
                                 color = if (ramFraction > 0.85f) AccentPurple else AccentBlue,
                                 trackColor = CardSurface
                             )
@@ -386,10 +387,10 @@ fun DeviceCheckAppRoot() {
                                 AxisMeter(label = "Y-AXIS", value = accelY)
                                 AxisMeter(label = "Z-AXIS", value = accelZ)
                             }
-                            Spacer(modifier = Modifier.height(4.dp))
+                            Spacer(modifier = Modifier.height(6.dp))
                             Text(
                                 text = "Values stream live from the physical accelerometer. Tap any row to copy.",
-                                fontSize = 10.sp,
+                                fontSize = 11.sp,
                                 color = TextMuted
                             )
                         }
@@ -400,6 +401,7 @@ fun DeviceCheckAppRoot() {
                         }
                     }
 
+                    // TAB 2: SILICON & HARDWARE CRYPTOGRAPHY
                     AuditTab.SILICON -> {
                         hardwareExt?.let { ext ->
                             CleanCard(title = "SYSTEM ON CHIP (SOC) HARDWARE", badge = "API 31+") {
@@ -431,6 +433,7 @@ fun DeviceCheckAppRoot() {
                         }
                     }
 
+                    // TAB 3: OPTICS, DISPLAY & HARDWARE PERIPHERALS
                     AuditTab.OPTICS_DISPLAY -> {
                         nonRootReport?.let { nr ->
                             CleanCard(title = "CAMERA SILICON & OPTICAL MATRIX", badge = "OPTICS") {
@@ -462,6 +465,7 @@ fun DeviceCheckAppRoot() {
                         }
                     }
 
+                    // TAB 4: NETWORK & RADIO
                     AuditTab.NETWORK_RADIO -> {
                         hardwareExt?.let { ext ->
                             CleanCard(title = "WI-FI PHYSICAL RADIO & GENERATION", badge = "802.11 PHY") {
@@ -503,9 +507,10 @@ fun DeviceCheckAppRoot() {
                         }
                     }
 
+                    // TAB 5: SYSTEM & IDENTITY (FRAMEWORK VS HARDWARE)
                     AuditTab.SYSTEM_IDENTITY -> {
                         CleanCard(title = "FRAMEWORK VS HARDWARE CROSS-EXAMINATION", badge = "COMPARISON") {
-                            MetricRow("Declared User-Agent Model", nonRootReport?.defaultUserAgent?.take(75) ?: "Reading...")
+                            MetricRow("Declared User-Agent Model", nonRootReport?.defaultUserAgent?.take(80) ?: "Reading...")
                             MetricRow("Physical GPU Renderer", nonRootReport?.gpu?.renderer ?: "Reading...")
                             MetricRow("Declared SoC Model", hardwareExt?.socModel ?: "Reading...")
                             MetricRow("Widevine Motherboard ID", nonRootReport?.widevine?.systemId ?: "Reading...")
@@ -533,18 +538,19 @@ fun DeviceCheckAppRoot() {
                             nativeAntiTamper.lines().forEach { line ->
                                 val parts = line.split("=", limit = 2)
                                 if (parts.size == 2) MetricRow(parts[0], parts[1])
-                                else Text(text = line, fontSize = 10.sp, color = TextMuted, fontFamily = FontFamily.Monospace)
+                                else Text(text = line, fontSize = 11.sp, color = TextMuted, fontFamily = FontFamily.Monospace)
                             }
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(24.dp))
             }
         }
     }
 }
 
+// Reusable Clean UI Components
 @Composable
 fun CleanCard(
     title: String,
@@ -557,7 +563,7 @@ fun CleanCard(
         border = BorderStroke(1.dp, BorderSubtle),
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
+        Column(modifier = Modifier.padding(15.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -565,7 +571,7 @@ fun CleanCard(
             ) {
                 Text(
                     text = title,
-                    fontSize = 11.sp,
+                    fontSize = 12.5.sp,
                     fontWeight = FontWeight.Bold,
                     color = AccentBlue,
                     letterSpacing = 0.5.sp
@@ -578,13 +584,13 @@ fun CleanCard(
                     Text(
                         text = badge,
                         color = TextMuted,
-                        fontSize = 9.sp,
+                        fontSize = 10.sp,
                         fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp)
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(11.dp))
             content()
         }
     }
@@ -602,17 +608,18 @@ fun MetricRow(label: String, value: String) {
                 clipboard.setPrimaryClip(clip)
                 Toast.makeText(context, "Copied: $label", Toast.LENGTH_SHORT).show()
             }
-            .padding(vertical = 3.dp)
+            .padding(vertical = 4.dp)
     ) {
         Text(
             text = label,
-            fontSize = 10.sp,
+            fontSize = 11.5.sp,
             color = TextMuted,
             fontWeight = FontWeight.Medium
         )
         Text(
             text = value,
-            fontSize = 11.sp,
+            fontSize = 13.sp,
+            lineHeight = 18.sp,
             color = TextPrimary,
             fontFamily = FontFamily.Monospace
         )
@@ -625,13 +632,13 @@ fun AxisMeter(label: String, value: Float) {
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .background(BgDark, RoundedCornerShape(8.dp))
-            .padding(horizontal = 14.dp, vertical = 8.dp)
+            .padding(horizontal = 16.dp, vertical = 9.dp)
     ) {
-        Text(text = label, fontSize = 9.sp, color = TextMuted, fontWeight = FontWeight.Bold)
-        Spacer(modifier = Modifier.height(2.dp))
+        Text(text = label, fontSize = 10.sp, color = TextMuted, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(3.dp))
         Text(
             text = "%.2f".format(value),
-            fontSize = 12.sp,
+            fontSize = 14.sp,
             color = AccentGreen,
             fontFamily = FontFamily.Monospace,
             fontWeight = FontWeight.Bold
@@ -644,112 +651,4 @@ private fun formatUptime(ms: Long): String {
     val min = (ms / (1000 * 60)) % 60
     val hrs = (ms / (1000 * 60 * 60))
     return "%02d:%02d:%02d".format(hrs, min, sec)
-}
-
-private fun generateSnapshotJson(
-    nonRootReport: NonRootTrackerReport?,
-    identityReport: IdentityAuditReport?,
-    networkReport: NonRootNetworkReport?,
-    cellular: CellularTelemetry?,
-    gnss: GnssTelemetry?,
-    hardwareExt: HardwareExtensionsReport?,
-    nativeAntiTamper: String
-): String {
-    val root = JSONObject()
-
-    val meta = JSONObject().apply {
-        put("tool", "DeviceCheck Forensic Audit")
-        put("version", "1.0.0")
-        put("timestamp_epoch", System.currentTimeMillis())
-        put("timestamp_iso", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZZZZZ", Locale.US).format(Date()))
-        put("uptime_ms", SystemClock.elapsedRealtime())
-        put("android_release", Build.VERSION.RELEASE)
-        put("sdk_api", Build.VERSION.SDK_INT)
-        put("security_patch", Build.VERSION.SECURITY_PATCH)
-        put("claimed_fingerprint", Build.FINGERPRINT)
-    }
-    root.put("metadata", meta)
-
-    val silicon = JSONObject().apply {
-        put("declared_soc_manufacturer", hardwareExt?.socManufacturer ?: "N/A")
-        put("declared_soc_model", hardwareExt?.socModel ?: "N/A")
-        put("egl_renderer", nonRootReport?.gpu?.renderer ?: "N/A")
-        put("egl_vendor", nonRootReport?.gpu?.vendor ?: "N/A")
-        put("opengl_driver", nonRootReport?.gpu?.openGlVersion ?: "N/A")
-        put("gl_extensions_hash", nonRootReport?.gpu?.extensionsHash ?: "N/A")
-        put("total_hardware_sensors", nonRootReport?.sensorCount ?: 0)
-        put("sensor_roster_hash", nonRootReport?.sensorFingerprintHash ?: "N/A")
-        put("registered_codecs_count", nonRootReport?.codecCount ?: 0)
-        put("hardware_decoders", JSONArray(nonRootReport?.hardwareDecoders ?: emptyList<String>()))
-    }
-    root.put("silicon", silicon)
-
-    val crypto = JSONObject().apply {
-        put("widevine_security_level", nonRootReport?.widevine?.securityLevel ?: "N/A")
-        put("widevine_system_id", nonRootReport?.widevine?.systemId ?: "N/A")
-        put("widevine_vendor", nonRootReport?.widevine?.vendor ?: "N/A")
-        put("widevine_hdcp_level", nonRootReport?.widevine?.maxHdcpLevel ?: "N/A")
-        put("ssaid", identityReport?.ssaid ?: "N/A")
-        put("gsf_id", identityReport?.gsfId ?: "N/A")
-        put("gsf_status", identityReport?.gsfStatus ?: "N/A")
-    }
-    root.put("cryptography_and_identifiers", crypto)
-
-    val opticsDisplay = JSONObject().apply {
-        put("rear_camera_optics", nonRootReport?.optics?.rearOptics ?: "N/A")
-        put("front_camera_optics", nonRootReport?.optics?.frontOptics ?: "N/A")
-        put("display_resolution", nonRootReport?.displayMetrics ?: "N/A")
-        put("supported_refresh_rate_steps", nonRootReport?.supportedRefreshRates ?: "N/A")
-        put("is_hdr_supported", nonRootReport?.isHdrSupported ?: false)
-        put("is_wide_color_gamut", nonRootReport?.isWideColorGamut ?: false)
-        put("audio_dac_sample_rate", nonRootReport?.audioOutputSampleRate ?: "N/A")
-    }
-    root.put("optics_and_display", opticsDisplay)
-
-    val network = JSONObject().apply {
-        put("primary_interface", networkReport?.activeInterface ?: "N/A")
-        put("local_ipv4", networkReport?.localIpAddress ?: "N/A")
-        put("default_gateway", networkReport?.defaultGateway ?: "N/A")
-        put("interface_mtu", networkReport?.interfaceMtu ?: "N/A")
-        put("is_virtual_tunnel_vpn", networkReport?.isVpnDetected ?: false)
-        put("wifi_standard", hardwareExt?.wifiStandard ?: "N/A")
-        put("wifi_frequency", hardwareExt?.wifiFrequencyMhz ?: "N/A")
-        put("wifi_link_speed", hardwareExt?.wifiLinkSpeed ?: "N/A")
-        put("dns_servers", nonRootReport?.dhcpDnsServers ?: "N/A")
-    }
-    root.put("network", network)
-
-    val radio = JSONObject().apply {
-        put("baseband_firmware", cellular?.basebandRadio ?: "N/A")
-        put("sim_operator", cellular?.simOperator ?: "N/A")
-        put("sim_operator_name", cellular?.simOperatorName ?: "N/A")
-        put("sim_country_iso", cellular?.simCountryIso ?: "N/A")
-        put("network_operator_name", cellular?.networkOperatorName ?: "N/A")
-        put("cell_tower_id", cellular?.cellTowerId ?: "N/A")
-        put("signal_dbm", cellular?.radioSignalDbm ?: "N/A")
-        put("network_type", cellular?.dataNetworkType ?: "N/A")
-    }
-    root.put("telephony_radio", radio)
-
-    val gnssObj = JSONObject().apply {
-        put("system_location_enabled", gnss?.isSystemLocationEnabled ?: false)
-        put("provider", gnss?.provider ?: "N/A")
-        put("is_mock_flagged", gnss?.isMockFlagged ?: false)
-        put("satellites_used_in_fix", gnss?.satellitesUsedInFix ?: 0)
-        put("satellites_in_view", gnss?.satellitesInView ?: 0)
-        put("active_constellations", JSONArray(gnss?.constellationsActive ?: emptyList<String>()))
-        put("avg_carrier_noise_dbhz", gnss?.averageSnrNoiseDbHz ?: 0f)
-    }
-    root.put("gnss_satellites", gnssObj)
-
-    val peripherals = JSONObject().apply {
-        put("input_controllers", JSONArray(hardwareExt?.inputDevices ?: emptyList<String>()))
-        put("audio_outputs", JSONArray(hardwareExt?.audioOutputTopology ?: emptyList<String>()))
-        put("audio_inputs", JSONArray(hardwareExt?.audioInputTopology ?: emptyList<String>()))
-    }
-    root.put("hardware_peripherals", peripherals)
-
-    root.put("anti_tamper_procfs", nativeAntiTamper)
-
-    return root.toString(2)
 }
