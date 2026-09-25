@@ -13,14 +13,14 @@ data class IdentityAuditReport(
 object IdentityAuditor {
 
     fun audit(context: Context): IdentityAuditReport {
-        // 1. Android ID (SSAID) via Settings.Secure
+        // 1. Android ID (SSAID)
         val ssaid = Settings.Secure.getString(
             context.contentResolver,
             Settings.Secure.ANDROID_ID
         ) ?: "RESTRICTED_OR_NULL"
 
-        // 2. Google Services Framework (GSF) ID via ContentProvider
-        val (gsfId, gsfStatus) = getGsfId(context)
+        // 2. Multi-Path Google Services Framework (GSF) ID
+        val (gsfId, gsfStatus) = extractGsfId(context)
 
         return IdentityAuditReport(
             ssaid = ssaid,
@@ -29,9 +29,33 @@ object IdentityAuditor {
         )
     }
 
-    private fun getGsfId(context: Context): Pair<String, String> {
+    private fun extractGsfId(context: Context): Pair<String, String> {
         val uri = Uri.parse("content://com.google.android.gsf.gservices")
-        return try {
+        
+        // Strategy A: Standard query with selection
+        try {
+            val cursor = context.contentResolver.query(
+                uri,
+                null,
+                "name=?",
+                arrayOf("android_id"),
+                null
+            )
+            if (cursor != null) {
+                if (cursor.moveToFirst()) {
+                    val rawVal = cursor.getString(1)
+                    cursor.close()
+                    if (!rawVal.isNullOrBlank()) {
+                        val hex = rawVal.toLongOrNull()?.let { java.lang.Long.toHexString(it).uppercase() } ?: rawVal
+                        return Pair(hex, "REGISTERED_PLAY_TOKEN")
+                    }
+                }
+                cursor.close()
+            }
+        } catch (_: Throwable) {}
+
+        // Strategy B: Positional argument query
+        try {
             val cursor = context.contentResolver.query(
                 uri,
                 null,
@@ -39,25 +63,35 @@ object IdentityAuditor {
                 arrayOf("android_id"),
                 null
             )
-
-            if (cursor != null && cursor.moveToFirst()) {
-                val rawValue = cursor.getString(1)
-                cursor.close()
-
-                if (!rawValue.isNullOrBlank()) {
-                    val hexGsf = java.lang.Long.toHexString(rawValue.toLong())
-                    Pair(hexGsf.uppercase(), "VALID_REGISTERED_TOKEN")
-                } else {
-                    Pair("N/A", "EMPTY_GSF_RECORD")
+            if (cursor != null) {
+                while (cursor.moveToNext()) {
+                    val name = cursor.getString(0)
+                    val value = cursor.getString(1)
+                    if (name == "android_id" && !value.isNullOrBlank()) {
+                        cursor.close()
+                        val hex = value.toLongOrNull()?.let { java.lang.Long.toHexString(it).uppercase() } ?: value
+                        return Pair(hex, "REGISTERED_PLAY_TOKEN")
+                    }
                 }
-            } else {
-                cursor?.close()
-                Pair("N/A", "NOT_REGISTERED / GMS_ABSENT")
+                cursor.close()
             }
-        } catch (e: SecurityException) {
-            Pair("PERMISSION_DENIED", "ACCESS_BLOCKED_BY_FRAMEWORK")
-        } catch (e: Exception) {
-            Pair("N/A", "QUERY_FAILED: ${e.message?.take(25)}")
-        }
+        } catch (_: Throwable) {}
+
+        // Strategy C: Direct URI path
+        try {
+            val directUri = Uri.parse("content://com.google.android.gsf.gservices/android_id")
+            val cursor = context.contentResolver.query(directUri, null, null, null, null)
+            if (cursor != null && cursor.moveToFirst()) {
+                val value = cursor.getString(1) ?: cursor.getString(0)
+                cursor.close()
+                if (!value.isNullOrBlank()) {
+                    val hex = value.toLongOrNull()?.let { java.lang.Long.toHexString(it).uppercase() } ?: value
+                    return Pair(hex, "REGISTERED_PLAY_TOKEN")
+                }
+            }
+            cursor?.close()
+        } catch (_: Throwable) {}
+
+        return Pair("NOT_REGISTERED", "EMPTY_OR_UNCHECKED_GMS")
     }
 }
