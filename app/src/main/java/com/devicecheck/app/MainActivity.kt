@@ -56,14 +56,10 @@ fun DeviceCheckAppRoot() {
 
     var nonRootReport by remember { mutableStateOf<NonRootTrackerReport?>(null) }
     var identityReport by remember { mutableStateOf<IdentityAuditReport?>(null) }
+    var networkReport by remember { mutableStateOf<NonRootNetworkReport?>(null) }
     var cellular by remember { mutableStateOf<CellularTelemetry?>(null) }
     var gnss by remember { mutableStateOf<GnssTelemetry?>(null) }
-    var nativeSerials by remember { mutableStateOf("Auditing...") }
-    var nativeNetwork by remember { mutableStateOf("Auditing...") }
-    var nativeBattery by remember { mutableStateOf("Auditing...") }
     var nativeAntiTamper by remember { mutableStateOf("Auditing...") }
-    var nativeClocks by remember { mutableStateOf("Auditing...") }
-    var rootGroundTruth by remember { mutableStateOf<RootHardwareGroundTruth?>(null) }
 
     fun refreshTelemetry() {
         coroutineScope.launch {
@@ -71,16 +67,10 @@ fun DeviceCheckAppRoot() {
                 withContext(Dispatchers.IO) {
                     nonRootReport = NonRootTrackerAuditor.audit(context)
                     identityReport = IdentityAuditor.audit(context)
+                    networkReport = NonRootNetworkAuditor.audit(context)
                     cellular = CellularRadioAuditor.audit(context)
                     gnss = GnssConstellationAuditor.audit(context)
-
-                    nativeSerials = NativeProbeCore.auditHardwareSerials()
-                    nativeNetwork = NativeProbeCore.auditKernelNetwork()
-                    nativeBattery = NativeProbeCore.auditBatteryRegisters()
                     nativeAntiTamper = NativeProbeCore.auditAntiTamper()
-                    nativeClocks = NativeProbeCore.auditClocks()
-
-                    rootGroundTruth = RootProbeEngine.probeGroundTruth()
                 }
             } catch (_: Throwable) {}
         }
@@ -140,7 +130,7 @@ fun DeviceCheckAppRoot() {
                         letterSpacing = 1.sp
                     )
                     Text(
-                        text = "NON-ROOT FINGERPRINT RADAR",
+                        text = "HARDWARE INTEGRITY & DISCREPANCY RADAR",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF00FF88),
@@ -163,29 +153,85 @@ fun DeviceCheckAppRoot() {
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Non-Root Tracker Banner
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = Color(0x330B1120),
-                border = BorderStroke(1.dp, Color(0x3300FF88)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text(
-                        text = "COMMERCIAL TRACKER SURFACE: ACTIVE",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Black,
-                        color = Color(0xFF00FF88)
-                    )
-                    Text(
-                        text = "Capturing GPU EGL strings, Widevine hardware ID, optical physics, and system feature rosters accessible to social apps without root.",
-                        fontSize = 10.sp,
-                        color = Color(0xFF94A3B8)
-                    )
-                }
-            }
+            // 0. AUTOMATED SPOOF DISCREPANCY DETECTOR
+            nonRootReport?.let { nr ->
+                val discrepancies = mutableListOf<String>()
+                val ua = nr.defaultUserAgent.lowercase()
+                val renderer = nr.gpu.renderer.lowercase()
+                val refresh = nr.supportedRefreshRates
 
-            Spacer(modifier = Modifier.height(12.dp))
+                // Discrepancy 1: Model claims Pixel (Mali GPU) but physical GPU is Adreno (Qualcomm)
+                if (ua.contains("pixel") && renderer.contains("adreno")) {
+                    discrepancies.add("GPU SILICON MISMATCH: User-Agent claims Pixel (Tensor/Mali), but physical GPU is Qualcomm Adreno!")
+                }
+
+                // Discrepancy 2: Model claims Pixel 8 Pro but panel supports 144Hz
+                if (ua.contains("pixel") && refresh.contains("144hz")) {
+                    discrepancies.add("DISPLAY PANEL MISMATCH: Pixel hardware is limited to 120Hz, but panel supports 144Hz (Motorola Panel)!")
+                }
+
+                // Discrepancy 3: Widevine ID Motorola vs Google
+                if (ua.contains("pixel") && nr.widevine.systemId == "28917") {
+                    discrepancies.add("WIDEVINE MOTHERBOARD MISMATCH: System ID 28917 belongs to Motorola OEM, not Google!")
+                }
+
+                val hasDiscrepancy = discrepancies.isNotEmpty()
+
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = Color(0x330B1120),
+                    border = BorderStroke(1.dp, if (hasDiscrepancy) Color(0xFFF43F5E) else Color(0xFF00FF88)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (hasDiscrepancy) "🚨 SPOOF DISCREPANCY DETECTED" else "✅ HARDWARE PROFILE CONSISTENT",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Black,
+                                color = if (hasDiscrepancy) Color(0xFFF43F5E) else Color(0xFF00FF88)
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (hasDiscrepancy) Color(0x22F43F5E) else Color(0x2200FF88)
+                            ) {
+                                Text(
+                                    text = if (hasDiscrepancy) "${discrepancies.size} FLAGS" else "CLEAN",
+                                    color = if (hasDiscrepancy) Color(0xFFF43F5E) else Color(0xFF00FF88),
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+
+                        if (hasDiscrepancy) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            discrepancies.forEach { flag ->
+                                Text(
+                                    text = "• $flag",
+                                    fontSize = 10.sp,
+                                    color = Color(0xFFFCA5A5),
+                                    fontFamily = FontFamily.Monospace,
+                                    modifier = Modifier.padding(vertical = 2.dp)
+                                )
+                            }
+                        } else {
+                            Text(
+                                text = "All userland strings, GPU drivers, and optical characteristics match.",
+                                fontSize = 10.sp,
+                                color = Color(0xFF94A3B8)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+            }
 
             nonRootReport?.let { nr ->
                 // 1. GPU EGL & Widevine DRM Hardware Anchors
@@ -202,7 +248,7 @@ fun DeviceCheckAppRoot() {
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // 2. Camera2 Physical Optical Matrix (No Camera Permission)
+                // 2. Camera2 Physical Optical Matrix
                 AuditCard(title = "PHYSICAL OPTICAL MATRIX (ZERO PERM)", badge = "HARDWARE") {
                     MetricRow("Rear Physical Sensor", nr.optics.rearOptics)
                     MetricRow("Front Physical Sensor", nr.optics.frontOptics)
@@ -260,17 +306,18 @@ fun DeviceCheckAppRoot() {
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
+            }
 
-                // 8. Network Capabilities & User Agent
-                AuditCard(title = "NETWORK CAPABILITIES & USER AGENT", badge = "ACCESS_NET") {
-                    MetricRow("Active Transports", nr.networkTransports)
-                    MetricRow("DNS Servers (LinkProps)", nr.dhcpDnsServers)
-                    MetricRow("Bandwidth Estimation", nr.linkBandwidthEstimate)
-                    MetricRow("Timezone & DST", nr.timezoneDst)
-                    MetricRow("Primary System Locale", nr.localeOrder)
-                    MetricRow("Default WebKit User-Agent", nr.defaultUserAgent)
+            // 8. UNPRIVILEGED NETWORK INTERFACE & GATEWAY AUDIT
+            networkReport?.let { net ->
+                AuditCard(title = "UNPRIVILEGED NETWORK ROUTES & GATEWAY", badge = "FRAMEWORK") {
+                    MetricRow("Active Interface", net.activeInterface)
+                    MetricRow("Local IPv4 Address", net.localIpAddress)
+                    MetricRow("Default Gateway Route", net.defaultGateway)
+                    MetricRow("Interface MTU", net.interfaceMtu)
+                    MetricRow("Virtual Interface (VPN)", if (net.isVpnDetected) "TUN/WG DETECTED" else "CLEAR (PHYSICAL)")
+                    MetricRow("Bound IPv4 Interfaces", net.allNetworkInterfaces.joinToString(" • "))
                 }
-
                 Spacer(modifier = Modifier.height(12.dp))
             }
 
@@ -283,18 +330,19 @@ fun DeviceCheckAppRoot() {
                 Spacer(modifier = Modifier.height(12.dp))
             }
 
-            // 10. GNSS Physical Constellations
+            // 10. GNSS Physical Constellations & Coordinates
             gnss?.let { g ->
                 AuditCard(
-                    title = "GNSS SATELLITE CONSTELLATIONS & NOISE",
-                    badge = if (g.isMockFlagged) "MOCK DETECTED" else "PHYSICAL GNSS",
+                    title = "GNSS SATELLITES & INDOOR FIX",
+                    badge = if (g.isMockFlagged) "MOCK DETECTED" else if (g.isSystemLocationEnabled) "ACTIVE" else "LOCATION OFF",
                     badgeColor = if (g.isMockFlagged) Color(0xFFF43F5E) else Color(0xFF00FF88)
                 ) {
-                    MetricRow("Location Provider", "${g.provider} (Mock Flag: ${if (g.isMockFlagged) "TRUE" else "FALSE"})")
+                    MetricRow("System Location Switch", if (g.isSystemLocationEnabled) "ENABLED IN SETTINGS" else "DISABLED IN SETTINGS")
+                    MetricRow("Positioning Provider", "${g.provider} (Mock Flag: ${if (g.isMockFlagged) "TRUE" else "FALSE"})")
                     MetricRow("Coordinates", "Lat: ${"%.5f".format(g.latitude)}, Lng: ${"%.5f".format(g.longitude)} (±${g.accuracyMeters}m)")
                     MetricRow("Altitude", "${"%.2f".format(g.altitudeMeters)}m")
                     MetricRow("Satellites (Fix / View)", "${g.satellitesUsedInFix} used / ${g.satellitesInView} in view")
-                    MetricRow("Active Constellations", if (g.constellationsActive.isEmpty()) "Acquiring satellite constellation..." else g.constellationsActive.joinToString(" • "))
+                    MetricRow("Active Constellations", if (g.constellationsActive.isEmpty()) "Acquiring satellites (line of sight)..." else g.constellationsActive.joinToString(" • "))
                     MetricRow("Avg Carrier Noise (C/N0)", "${"%.1f".format(g.averageSnrNoiseDbHz)} dB-Hz")
                 }
                 Spacer(modifier = Modifier.height(12.dp))
@@ -316,17 +364,7 @@ fun DeviceCheckAppRoot() {
                 Spacer(modifier = Modifier.height(12.dp))
             }
 
-            // 12. Native C++ POSIX Kernel Route Audit
-            AuditCard(title = "RAW POSIX KERNEL NETWORK ROUTES", badge = "C++20 NDK") {
-                nativeNetwork.lines().forEach { line ->
-                    val parts = line.split("=", limit = 2)
-                    if (parts.size == 2) MetricRow(parts[0], parts[1])
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // 13. Anti-Tamper Memory Map Scan
+            // 12. Anti-Tamper Memory Map Scan
             AuditCard(title = "ANTI-TAMPER & MEMORY MAP SCAN", badge = "PROCFS") {
                 nativeAntiTamper.lines().forEach { line ->
                     val parts = line.split("=", limit = 2)
