@@ -2,6 +2,9 @@ package com.devicecheck.app
 
 import android.Manifest
 import android.app.ActivityManager
+import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -14,6 +17,7 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -64,7 +68,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// Executive Dark Theme Palette
 private val BgDark = Color(0xFF090D16)
 private val CardSurface = Color(0xFF111726)
 private val BorderSubtle = Color(0xFF1E293B)
@@ -96,6 +99,7 @@ fun DeviceCheckAppRoot() {
     var networkReport by remember { mutableStateOf<NonRootNetworkReport?>(null) }
     var cellular by remember { mutableStateOf<CellularTelemetry?>(null) }
     var gnss by remember { mutableStateOf<GnssTelemetry?>(null) }
+    var hardwareExt by remember { mutableStateOf<HardwareExtensionsReport?>(null) }
     var nativeAntiTamper by remember { mutableStateOf("Auditing...") }
 
     // Live Dynamic Telemetry States
@@ -109,7 +113,27 @@ fun DeviceCheckAppRoot() {
     var accelY by remember { mutableFloatStateOf(0f) }
     var accelZ by remember { mutableFloatStateOf(9.8f) }
 
-    // Live Sensor Listener (Accelerometer)
+    // 1. Event-Driven Battery Receiver (Eliminates high-frequency polling overhead)
+    DisposableEffect(context) {
+        val bm = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context?, intent: Intent?) {
+                if (intent != null) {
+                    liveBatteryMv = intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0)
+                    val rawTemp = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0)
+                    liveBatteryTemp = rawTemp / 10.0f
+                    liveBatteryCurrentUa = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW) ?: 0
+                }
+            }
+        }
+        val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+        context.registerReceiver(receiver, filter)
+        onDispose {
+            context.unregisterReceiver(receiver)
+        }
+    }
+
+    // 2. Live Accelerometer IMU Listener
     DisposableEffect(Unit) {
         val sm = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
         val accel = sm?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
@@ -123,35 +147,19 @@ fun DeviceCheckAppRoot() {
             }
             override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
         }
-        if (accel != null) {
-            sm.registerListener(listener, accel, SensorManager.SENSOR_DELAY_UI)
-        }
-        onDispose {
-            sm?.unregisterListener(listener)
-        }
+        if (accel != null) sm.registerListener(listener, accel, SensorManager.SENSOR_DELAY_UI)
+        onDispose { sm?.unregisterListener(listener) }
     }
 
-    // Live 1000ms Polling Loop (RAM, Battery, Uptime)
+    // 3. Live 1000ms Polling Loop (RAM & Hardware Clock)
     LaunchedEffect(Unit) {
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-        val bm = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
         val memInfo = ActivityManager.MemoryInfo()
-
         while (isActive) {
             liveUptimeMs = SystemClock.elapsedRealtime()
-
-            // Poll RAM
             am?.getMemoryInfo(memInfo)
             ramTotalMb = memInfo.totalMem / (1024 * 1024)
             ramUsedMb = (memInfo.totalMem - memInfo.availMem) / (1024 * 1024)
-
-            // Poll Battery
-            val batteryIntent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-            liveBatteryMv = batteryIntent?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0) ?: 0
-            val tempRaw = batteryIntent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
-            liveBatteryTemp = tempRaw / 10.0f
-            liveBatteryCurrentUa = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW) ?: 0
-
             delay(1000)
         }
     }
@@ -165,6 +173,7 @@ fun DeviceCheckAppRoot() {
                     networkReport = NonRootNetworkAuditor.audit(context)
                     cellular = CellularRadioAuditor.audit(context)
                     gnss = GnssConstellationAuditor.audit(context)
+                    hardwareExt = HardwareExtensionsAuditor.audit(context)
                     nativeAntiTamper = NativeProbeCore.auditAntiTamper()
                 }
             } catch (_: Throwable) {}
@@ -237,17 +246,52 @@ fun DeviceCheckAppRoot() {
                     )
                 }
 
-                Button(
-                    onClick = { refreshTelemetry() },
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = CardSurface,
-                        contentColor = AccentBlue
-                    ),
-                    border = BorderStroke(1.dp, BorderSubtle),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
-                ) {
-                    Text("Re-Audit", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            coroutineScope.launch(Dispatchers.IO) {
+                                val file = CodexMasterExporter.exportSnapshot(
+                                    context = context,
+                                    nonRootReport = nonRootReport,
+                                    identityReport = identityReport,
+                                    networkReport = networkReport,
+                                    cellular = cellular,
+                                    gnss = gnss,
+                                    hardwareExt = hardwareExt,
+                                    nativeAntiTamper = nativeAntiTamper
+                                )
+                                withContext(Dispatchers.Main) {
+                                    if (file != null) {
+                                        CodexMasterExporter.shareSnapshotFile(context, file)
+                                    } else {
+                                        Toast.makeText(context, "Export generation failed", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = CardSurface,
+                            contentColor = AccentGreen
+                        ),
+                        border = BorderStroke(1.dp, BorderSubtle),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text("Export", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    }
+
+                    Button(
+                        onClick = { refreshTelemetry() },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = CardSurface,
+                            contentColor = AccentBlue
+                        ),
+                        border = BorderStroke(1.dp, BorderSubtle),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text("Re-Audit", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    }
                 }
             }
 
@@ -295,7 +339,6 @@ fun DeviceCheckAppRoot() {
                 when (selectedTab) {
                     // TAB 1: DYNAMIC LIVE DASHBOARD
                     AuditTab.DASHBOARD -> {
-                        // Live System Memory Monitor
                         val ramFraction = if (ramTotalMb > 0) ramUsedMb.toFloat() / ramTotalMb.toFloat() else 0f
                         val animatedRam by animateFloatAsState(targetValue = ramFraction, animationSpec = tween(500), label = "ram")
 
@@ -324,8 +367,7 @@ fun DeviceCheckAppRoot() {
                             )
                         }
 
-                        // Live Battery PMIC Hardware Stream
-                        CleanCard(title = "LIVE BATTERY FUEL-GAUGE", badge = "PMIC SENSOR") {
+                        CleanCard(title = "LIVE BATTERY FUEL-GAUGE", badge = "EVENT-DRIVEN") {
                             MetricRow("Terminal Voltage", "$liveBatteryMv mV")
                             MetricRow("Cell Temperature", "$liveBatteryTemp °C")
                             MetricRow("Instantaneous Draw", if (liveBatteryCurrentUa != 0) "${liveBatteryCurrentUa / 1000} mA (${liveBatteryCurrentUa} µA)" else "Standard Idle Draw")
@@ -335,7 +377,6 @@ fun DeviceCheckAppRoot() {
                             }
                         }
 
-                        // Live 3-Axis IMU Sensor Stream
                         CleanCard(title = "LIVE 3-AXIS MEMS MOTION VECTOR", badge = "HARDWARE STREAM") {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -347,13 +388,12 @@ fun DeviceCheckAppRoot() {
                             }
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "Values stream live from the onboard accelerometer at UI refresh rate.",
+                                text = "Values stream live from the physical accelerometer. Tap any row to copy.",
                                 fontSize = 10.sp,
                                 color = TextMuted
                             )
                         }
 
-                        // Live Clock & Hardware Monotonic Ticks
                         CleanCard(title = "LIVE HARDWARE MONOTONIC CLOCK", badge = "BOOTTIME") {
                             MetricRow("System Uptime", formatUptime(liveUptimeMs))
                             MetricRow("Kernel Boottime Ticks", "${liveUptimeMs / 1000} seconds since cold boot")
@@ -362,6 +402,14 @@ fun DeviceCheckAppRoot() {
 
                     // TAB 2: SILICON & HARDWARE CRYPTOGRAPHY
                     AuditTab.SILICON -> {
+                        hardwareExt?.let { ext ->
+                            CleanCard(title = "SYSTEM ON CHIP (SOC) HARDWARE", badge = "API 31+") {
+                                MetricRow("Declared SoC Manufacturer", ext.socManufacturer)
+                                MetricRow("Declared SoC Model / Chip", ext.socModel)
+                                MetricRow("Physical CPU Cores", "${Runtime.getRuntime().availableProcessors()} Cores Online")
+                            }
+                        }
+
                         nonRootReport?.let { nr ->
                             CleanCard(title = "GPU ARCHITECTURE & DRIVERS", badge = "OPENGL ES") {
                                 MetricRow("GPU Renderer", nr.gpu.renderer)
@@ -384,7 +432,7 @@ fun DeviceCheckAppRoot() {
                         }
                     }
 
-                    // TAB 3: OPTICS & DISPLAY
+                    // TAB 3: OPTICS, DISPLAY & HARDWARE PERIPHERALS
                     AuditTab.OPTICS_DISPLAY -> {
                         nonRootReport?.let { nr ->
                             CleanCard(title = "CAMERA SILICON & OPTICAL MATRIX", badge = "OPTICS") {
@@ -399,15 +447,33 @@ fun DeviceCheckAppRoot() {
                                 MetricRow("Color & Dynamic Range", "HDR: ${nr.isHdrSupported} • WideColor: ${nr.isWideColorGamut}")
                             }
 
-                            CleanCard(title = "AUDIO DAC & DSP CLOCK", badge = "AUDIO") {
+                            CleanCard(title = "AUDIO DAC & TOPOLOGY", badge = "AUDIO") {
                                 MetricRow("Native Output Sample Rate", nr.audioOutputSampleRate)
                                 MetricRow("Hardware Buffer Sizing", nr.audioBufferSize)
+                                hardwareExt?.let { ext ->
+                                    MetricRow("Audio Sinks (Outputs)", ext.audioOutputTopology.joinToString(" • ").ifBlank { "Default Speaker" })
+                                    MetricRow("Audio Sources (Inputs)", ext.audioInputTopology.joinToString(" • ").ifBlank { "Built-in Mic" })
+                                }
+                            }
+                        }
+
+                        hardwareExt?.let { ext ->
+                            CleanCard(title = "INPUT CONTROLLER HARDWARE ROSTER", badge = "PHYSICAL HID") {
+                                MetricRow("Input Controllers Detected", ext.inputDevices.joinToString("\n").ifBlank { "Standard Touchscreen" })
                             }
                         }
                     }
 
                     // TAB 4: NETWORK & RADIO
                     AuditTab.NETWORK_RADIO -> {
+                        hardwareExt?.let { ext ->
+                            CleanCard(title = "WI-FI PHYSICAL RADIO & GENERATION", badge = "802.11 PHY") {
+                                MetricRow("Wi-Fi Standard", ext.wifiStandard)
+                                MetricRow("Carrier Frequency Band", ext.wifiFrequencyMhz)
+                                MetricRow("Physical Link Speed", ext.wifiLinkSpeed)
+                            }
+                        }
+
                         networkReport?.let { net ->
                             CleanCard(title = "NETWORK INTERFACE & ROUTING", badge = "NET STACK") {
                                 MetricRow("Primary Interface", net.activeInterface)
@@ -445,6 +511,7 @@ fun DeviceCheckAppRoot() {
                         CleanCard(title = "FRAMEWORK VS HARDWARE CROSS-EXAMINATION", badge = "COMPARISON") {
                             MetricRow("Declared User-Agent Model", nonRootReport?.defaultUserAgent?.take(75) ?: "Reading...")
                             MetricRow("Physical GPU Renderer", nonRootReport?.gpu?.renderer ?: "Reading...")
+                            MetricRow("Declared SoC Model", hardwareExt?.socModel ?: "Reading...")
                             MetricRow("Widevine Motherboard ID", nonRootReport?.widevine?.systemId ?: "Reading...")
                             MetricRow("Physical Display Steps", nonRootReport?.supportedRefreshRates ?: "Reading...")
                             MetricRow("Baseband Transceiver", cellular?.basebandRadio ?: "Reading...")
@@ -482,7 +549,7 @@ fun DeviceCheckAppRoot() {
     }
 }
 
-// Clean UI Components
+// Reusable Clean UI Components
 @Composable
 fun CleanCard(
     title: String,
@@ -530,7 +597,18 @@ fun CleanCard(
 
 @Composable
 fun MetricRow(label: String, value: String) {
-    Column(modifier = Modifier.padding(vertical = 3.dp)) {
+    val context = LocalContext.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable {
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val clip = ClipData.newPlainText(label, value)
+                clipboard.setPrimaryClip(clip)
+                Toast.makeText(context, "Copied: $label", Toast.LENGTH_SHORT).show()
+            }
+            .padding(vertical = 3.dp)
+    ) {
         Text(
             text = label,
             fontSize = 10.sp,
