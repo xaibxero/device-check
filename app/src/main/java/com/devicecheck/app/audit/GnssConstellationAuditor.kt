@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.Looper
 
 data class GnssTelemetry(
+    val isSystemLocationEnabled: Boolean,
     val provider: String,
     val isMockFlagged: Boolean,
     val latitude: Double,
@@ -46,10 +47,9 @@ object GnssConstellationAuditor {
 
         try {
             val mainHandler = Handler(Looper.getMainLooper())
-
-            // Always provide main looper handler to prevent "Calling thread has no looper" crash
             lm.registerGnssStatusCallback(gnssCallback, mainHandler)
 
+            // Register GPS provider
             if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
                 lm.requestLocationUpdates(
                     LocationManager.GPS_PROVIDER,
@@ -58,8 +58,19 @@ object GnssConstellationAuditor {
                     locationListener,
                     Looper.getMainLooper()
                 )
-                isGpsActive = true
             }
+
+            // Register Network provider (Cell/Wi-Fi positioning for indoor lock)
+            if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                lm.requestLocationUpdates(
+                    LocationManager.NETWORK_PROVIDER,
+                    1000L,
+                    0f,
+                    locationListener,
+                    Looper.getMainLooper()
+                )
+            }
+            isGpsActive = true
         } catch (_: Throwable) {}
     }
 
@@ -68,6 +79,11 @@ object GnssConstellationAuditor {
         startHardwareGps(context)
 
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        val isLocOn = lm?.let {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) it.isLocationEnabled
+            else it.isProviderEnabled(LocationManager.GPS_PROVIDER) || it.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        } ?: false
+
         val loc = latestLocation ?: try {
             lm?.getLastKnownLocation(LocationManager.GPS_PROVIDER)
                 ?: lm?.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
@@ -108,7 +124,8 @@ object GnssConstellationAuditor {
         val avgSnr = if (inView > 0) totalSnr / inView else 0f
 
         return GnssTelemetry(
-            provider = loc?.provider ?: if (isGpsActive) "GPS_ACTIVE_ACQUIRING" else "NONE",
+            isSystemLocationEnabled = isLocOn,
+            provider = loc?.provider ?: if (!isLocOn) "LOCATION_OFF_IN_SETTINGS" else "ACQUIRING_LOCK",
             isMockFlagged = isMock,
             latitude = loc?.latitude ?: 0.0,
             longitude = loc?.longitude ?: 0.0,
