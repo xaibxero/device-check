@@ -61,54 +61,56 @@ data class NonRootTrackerReport(
 object NonRootTrackerAuditor {
 
     fun audit(context: Context): NonRootTrackerReport {
-        // 1. Headless EGL GPU context (Zero Permissions)
         val gpuTelemetry = EglGpuAuditor.audit()
-
-        // 2. Widevine DRM Hardware Anchor (Zero Permissions)
         val widevineTelemetry = WidevineDrmAuditor.audit()
-
-        // 3. Camera2 Optical Physics (Zero Permissions)
         val cameraOptics = CameraOpticsAuditor.audit(context)
 
-        // 4. PackageManager System Available Features Hash (Zero Permissions)
-        val pmFeatures = context.packageManager.systemAvailableFeatures
-            .mapNotNull { it.name }
-            .sorted()
+        val pmFeatures = try {
+            context.packageManager.systemAvailableFeatures
+                .mapNotNull { it.name }
+                .sorted()
+        } catch (_: Throwable) { emptyList() }
         val pmFeaturesHash = sha256(pmFeatures.joinToString(","))
 
-        // 5. Sensor Silicon Roster (Zero Permissions)
-        val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        val allSensors = sm.getSensorList(Sensor.TYPE_ALL)
-        val sensorNames = allSensors.map { "${it.name} [${it.vendor} v${it.version}]" }
+        val sm = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        val allSensors = try { sm?.getSensorList(Sensor.TYPE_ALL) ?: emptyList() } catch (_: Throwable) { emptyList() }
+        val sensorNames = allSensors.map { "${it.name ?: "Sensor"} [${it.vendor ?: "Vendor"} v${it.version}]" }
         val sensorRosterHash = sha256(sensorNames.joinToString(";"))
-        val primarySensorsList = allSensors.take(4).map { "${it.name} (${it.vendor})" }
+        val primarySensorsList = allSensors.take(4).map { "${it.name ?: "Sensor"} (${it.vendor ?: "Vendor"})" }
 
-        // 6. MediaCodec Hardware Silhouette (Zero Permissions)
-        val codecList = MediaCodecList(MediaCodecList.ALL_CODECS)
-        val allCodecs = codecList.codecInfos
-        val hwDecoders = allCodecs.filter { !it.isEncoder && it.name.startsWith("c2.") }
-            .map { it.name }
+        val hwDecoders = mutableListOf<String>()
+        var codecCount = 0
+        try {
+            val codecList = MediaCodecList(MediaCodecList.ALL_CODECS)
+            val allCodecs = codecList.codecInfos
+            codecCount = allCodecs.size
+            allCodecs.filter { !it.isEncoder && it.name.startsWith("c2.") }
+                .forEach { hwDecoders.add(it.name) }
+        } catch (_: Throwable) {}
 
-        // 7. Display Metrics, Refresh Rates, HDR (Zero Permissions)
-        val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            context.display
-        } else {
-            @Suppress("DEPRECATION")
-            wm.defaultDisplay
-        }
+        val wm = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+        val display = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                context.display
+            } else {
+                @Suppress("DEPRECATION")
+                wm?.defaultDisplay
+            }
+        } catch (_: Throwable) { null }
+
         val modes = display?.supportedModes ?: emptyArray()
         val refreshRates = modes.map { "${it.refreshRate.toInt()}Hz (${it.physicalWidth}x${it.physicalHeight})" }.distinct()
         val displayStr = "${display?.width ?: 0}x${display?.height ?: 0} @ ${display?.refreshRate?.toInt() ?: 0}Hz"
         val isHdr = display?.isHdr ?: false
         val isWide = display?.isWideColorGamut ?: false
 
-        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val sampleRate = audioManager.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE) ?: "48000"
-        val framesPerBuffer = audioManager.getProperty(AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER) ?: "192"
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        val sampleRate = audioManager?.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE) ?: "48000"
+        val framesPerBuffer = audioManager?.getProperty(AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER) ?: "192"
 
-        // 8. Battery Hardware Telemetry (Sticky Intent - Zero Permissions)
-        val batteryIntent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val batteryIntent = try {
+            context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        } catch (_: Throwable) { null }
         val voltageMv = batteryIntent?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1) ?: -1
         val tempRaw = batteryIntent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
         val healthCode = batteryIntent?.getIntExtra(BatteryManager.EXTRA_HEALTH, BatteryManager.BATTERY_HEALTH_UNKNOWN)
@@ -122,36 +124,40 @@ object NonRootTrackerAuditor {
             else -> "UNKNOWN"
         }
 
-        // 9. System Extensions: Keyboards & TTS (Zero Permissions)
-        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        val keyboards = imm.enabledInputMethodList.map { it.serviceInfo.packageName }
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        val keyboards = try {
+            imm?.enabledInputMethodList?.mapNotNull { it.serviceInfo?.packageName } ?: emptyList()
+        } catch (_: Throwable) { emptyList() }
 
-        val tts = TextToSpeech(context, null)
-        val ttsList = tts.engines.map { it.name }
-        tts.shutdown()
+        val ttsEnginesList = mutableListOf<String>()
+        try {
+            val tts = TextToSpeech(context, null)
+            tts.engines?.mapNotNullTo(ttsEnginesList) { it.name }
+            tts.shutdown()
+        } catch (_: Throwable) {}
 
-        // 10. System Fonts Directory Fingerprint (Zero Permissions)
         val fontsDir = File("/system/fonts")
-        val fontFiles = fontsDir.list() ?: emptyArray()
+        val fontFiles = try { fontsDir.list() ?: emptyArray() } catch (_: Throwable) { emptyArray() }
         val fontHash = sha256(fontFiles.sorted().joinToString(","))
 
-        // 11. Storage & Memory Geometry (Zero Permissions)
-        val statFs = StatFs(Environment.getDataDirectory().path)
-        val totalBytes = statFs.totalBytes
-        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        val memInfo = ActivityManager.MemoryInfo()
-        am.getMemoryInfo(memInfo)
+        var totalBytes = 0L
+        try {
+            val statFs = StatFs(Environment.getDataDirectory().path)
+            totalBytes = statFs.totalBytes
+        } catch (_: Throwable) {}
 
-        // 12. Default User Agent & System Locales (Zero Permissions)
-        val ua = try { WebSettings.getDefaultUserAgent(context) } catch (_: Exception) { "Standard Android Dalvik/2.1.0" }
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        val memInfo = ActivityManager.MemoryInfo()
+        am?.getMemoryInfo(memInfo)
+
+        val ua = try { WebSettings.getDefaultUserAgent(context) } catch (_: Throwable) { "Standard Android Dalvik/2.1.0" }
         val tz = TimeZone.getDefault()
         val dst = if (tz.useDaylightTime()) "DST Supported (In Effect: ${tz.inDaylightTime(java.util.Date())})" else "No DST"
 
-        // 13. Network Unprivileged Capabilities
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val activeNet = cm.activeNetwork
-        val caps = cm.getNetworkCapabilities(activeNet)
-        val linkProps = cm.getLinkProperties(activeNet)
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val activeNet = cm?.activeNetwork
+        val caps = cm?.getNetworkCapabilities(activeNet)
+        val linkProps = cm?.getLinkProperties(activeNet)
 
         val transports = mutableListOf<String>()
         if (caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true) transports.add("WiFi")
@@ -171,10 +177,10 @@ object NonRootTrackerAuditor {
             sensorCount = allSensors.size,
             sensorFingerprintHash = sensorRosterHash.take(16).uppercase(),
             primarySensors = primarySensorsList,
-            codecCount = allCodecs.size,
+            codecCount = codecCount,
             hardwareDecoders = hwDecoders.take(4),
             displayMetrics = displayStr,
-            supportedRefreshRates = refreshRates.joinToString(" • "),
+            supportedRefreshRates = refreshRates.joinToString(" • ").ifBlank { "Default 60Hz" },
             isHdrSupported = isHdr,
             isWideColorGamut = isWide,
             audioOutputSampleRate = "$sampleRate Hz",
@@ -184,12 +190,12 @@ object NonRootTrackerAuditor {
             batteryHealth = healthStr,
             batteryTechnology = tech,
             installedKeyboards = keyboards,
-            ttsEngines = ttsList,
+            ttsEngines = ttsEnginesList,
             systemFontCount = fontFiles.size,
             fontRosterHash = fontHash.take(16).uppercase(),
             exactNandFlashBytes = "$totalBytes bytes (${totalBytes / (1024 * 1024 * 1024)} GB)",
             physicalRamBytes = "${memInfo.totalMem} bytes (${"%.2f".format(memInfo.totalMem / (1024.0 * 1024.0 * 1024.0))} GB)",
-            dalvikHeapLimitMb = "${am.memoryClass} MB (Large: ${am.largeMemoryClass} MB)",
+            dalvikHeapLimitMb = "${am?.memoryClass ?: 192} MB (Large: ${am?.largeMemoryClass ?: 512} MB)",
             defaultUserAgent = ua,
             networkTransports = transports.joinToString(" • ").ifBlank { "Disconnected" },
             dhcpDnsServers = dns.joinToString(" • ").ifBlank { "Default Gateway" },
