@@ -31,18 +31,18 @@ object HardwareExtensionsAuditor {
             Build.SOC_MODEL
         } else "Snapdragon / Legacy"
 
-        // 2. Wi-Fi Physical Radio Metrics
+        // 2. Wi-Fi Physical Radio Metrics (Using integer constants to ensure SDK compatibility)
         val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
         val wifiInfo: WifiInfo? = try { wm?.connectionInfo } catch (_: Throwable) { null }
 
         val standardStr = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && wifiInfo != null) {
             when (wifiInfo.wifiStandard) {
-                WifiInfo.WIFI_STANDARD_11BE -> "Wi-Fi 7 (802.11be)"
-                WifiInfo.WIFI_STANDARD_11AX -> "Wi-Fi 6 / 6E (802.11ax)"
-                WifiInfo.WIFI_STANDARD_11AC -> "Wi-Fi 5 (802.11ac)"
-                WifiInfo.WIFI_STANDARD_11N -> "Wi-Fi 4 (802.11n)"
-                WifiInfo.WIFI_STANDARD_LEGACY -> "Legacy 802.11a/b/g"
-                else -> "Wi-Fi Active"
+                6 -> "Wi-Fi 6 / 6E (802.11ax)"
+                5 -> "Wi-Fi 5 (802.11ac)"
+                4 -> "Wi-Fi 4 (802.11n)"
+                7, 8 -> "Wi-Fi 7 (802.11be)"
+                1 -> "Legacy (802.11a/b/g)"
+                else -> "Standard #${wifiInfo.wifiStandard}"
             }
         } else "802.11 Multi-Band"
 
@@ -58,7 +58,7 @@ object HardwareExtensionsAuditor {
             "${wifiInfo.linkSpeed} ${WifiInfo.LINK_SPEED_UNITS}"
         } else "Standby"
 
-        // 3. Input Hardware Controller Roster (Touchscreen digitizers, physical switches)
+        // 3. Input Hardware Controller Roster
         val inputDeviceNames = mutableListOf<String>()
         try {
             val deviceIds = InputDevice.getDeviceIds()
@@ -70,7 +70,7 @@ object HardwareExtensionsAuditor {
             }
         } catch (_: Throwable) {}
 
-        // 4. Audio Topology (Speakers, Receivers, Microphones)
+        // 4. Audio Topology
         val audioOutputs = mutableListOf<String>()
         val audioInputs = mutableListOf<String>()
         try {
