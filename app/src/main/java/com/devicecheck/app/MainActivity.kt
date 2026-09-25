@@ -42,6 +42,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -151,7 +152,7 @@ fun DeviceCheckAppRoot() {
         onDispose { sm?.unregisterListener(listener) }
     }
 
-    // 3. Live 1000ms Ticker (Memory & Monotonic Ticks)
+    // 3. Live 1000ms Ticker
     LaunchedEffect(Unit) {
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         val memInfo = ActivityManager.MemoryInfo()
@@ -211,42 +212,52 @@ fun DeviceCheckAppRoot() {
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 16.dp)
+                .padding(horizontal = 14.dp)
         ) {
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            // EXECUTIVE HEADER
+            // EXECUTIVE HEADER (Rigid Anti-Squish Constraints)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 6.dp)
+                ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
                             modifier = Modifier
-                                .size(9.dp)
+                                .size(8.dp)
                                 .clip(CircleShape)
                                 .background(AccentGreen)
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(7.dp))
                         Text(
                             text = "DeviceCheck",
-                            fontSize = 22.sp,
+                            fontSize = 19.sp,
                             fontWeight = FontWeight.Bold,
                             color = TextPrimary,
-                            letterSpacing = 0.5.sp
+                            letterSpacing = 0.4.sp,
+                            maxLines = 1
                         )
                     }
                     Text(
                         text = "${Build.MANUFACTURER.uppercase()} ${Build.MODEL} // API ${Build.VERSION.SDK_INT}",
-                        fontSize = 12.sp,
+                        fontSize = 10.5.sp,
                         color = TextMuted,
-                        fontFamily = FontFamily.Monospace
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Button(
                         onClick = {
                             coroutineScope.launch(Dispatchers.IO) {
@@ -264,38 +275,50 @@ fun DeviceCheckAppRoot() {
                                     if (file != null) {
                                         CodexMasterExporter.shareSnapshotFile(context, file)
                                     } else {
-                                        Toast.makeText(context, "Export generation failed", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "Export failed", Toast.LENGTH_SHORT).show()
                                     }
                                 }
                             }
                         },
-                        shape = RoundedCornerShape(10.dp),
+                        shape = RoundedCornerShape(8.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = CardSurface,
                             contentColor = AccentGreen
                         ),
                         border = BorderStroke(1.dp, BorderSubtle),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp)
+                        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 5.dp)
                     ) {
-                        Text("Export", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            text = "Export",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            softWrap = false
+                        )
                     }
 
                     Button(
                         onClick = { refreshTelemetry() },
-                        shape = RoundedCornerShape(10.dp),
+                        shape = RoundedCornerShape(8.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = CardSurface,
                             contentColor = AccentBlue
                         ),
                         border = BorderStroke(1.dp, BorderSubtle),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp)
+                        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 5.dp)
                     ) {
-                        Text("Re-Audit", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            text = "Re-Audit",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            softWrap = false
+                        )
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             // TAB NAVIGATION BAR
             ScrollableTabRow(
@@ -309,32 +332,32 @@ fun DeviceCheckAppRoot() {
                 AuditTab.values().forEach { tab ->
                     val isSelected = selectedTab == tab
                     Surface(
-                        shape = RoundedCornerShape(10.dp),
+                        shape = RoundedCornerShape(8.dp),
                         color = if (isSelected) AccentBlue.copy(alpha = 0.16f) else CardSurface,
                         border = BorderStroke(1.dp, if (isSelected) AccentBlue.copy(alpha = 0.65f) else BorderSubtle),
                         modifier = Modifier
-                            .padding(end = 8.dp)
+                            .padding(end = 6.dp)
                             .clickable { selectedTab = tab }
                     ) {
                         Text(
                             text = tab.title,
-                            fontSize = 12.sp,
+                            fontSize = 11.5.sp,
                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                             color = if (isSelected) AccentBlue else TextMuted,
-                            modifier = Modifier.padding(horizontal = 13.dp, vertical = 8.dp)
+                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp)
                         )
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             // WORKSTATION SCROLLABLE VIEWPORT
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 when (selectedTab) {
                     // TAB 1: DYNAMIC LIVE DASHBOARD
@@ -347,22 +370,22 @@ fun DeviceCheckAppRoot() {
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text(text = "Physical RAM Load", fontSize = 12.sp, color = TextMuted)
+                                Text(text = "Physical RAM Load", fontSize = 11.sp, color = TextMuted)
                                 Text(
                                     text = "$ramUsedMb MB / $ramTotalMb MB (${(ramFraction * 100).toInt()}%)",
-                                    fontSize = 12.5.sp,
+                                    fontSize = 12.sp,
                                     color = TextPrimary,
                                     fontFamily = FontFamily.Monospace,
                                     fontWeight = FontWeight.SemiBold
                                 )
                             }
-                            Spacer(modifier = Modifier.height(10.dp))
+                            Spacer(modifier = Modifier.height(8.dp))
                             LinearProgressIndicator(
                                 progress = { animatedRam },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(7.dp)
-                                    .clip(RoundedCornerShape(3.5.dp)),
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(3.dp)),
                                 color = if (ramFraction > 0.85f) AccentPurple else AccentBlue,
                                 trackColor = CardSurface
                             )
@@ -390,7 +413,7 @@ fun DeviceCheckAppRoot() {
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
                                 text = "Values stream live from the physical accelerometer. Tap any row to copy.",
-                                fontSize = 11.sp,
+                                fontSize = 10.5.sp,
                                 color = TextMuted
                             )
                         }
@@ -509,7 +532,7 @@ fun DeviceCheckAppRoot() {
 
                     // TAB 5: SYSTEM & IDENTITY (FRAMEWORK VS HARDWARE)
                     AuditTab.SYSTEM_IDENTITY -> {
-                        CleanCard(title = "FRAMEWORK VS HARDWARE CROSS-EXAMINATION", badge = "COMPARISON") {
+                        CleanCard(title = "FRAMEWORK VS HARDWARE CROSS-CHECK", badge = "PROFILE") {
                             MetricRow("Declared User-Agent Model", nonRootReport?.defaultUserAgent?.take(80) ?: "Reading...")
                             MetricRow("Physical GPU Renderer", nonRootReport?.gpu?.renderer ?: "Reading...")
                             MetricRow("Declared SoC Model", hardwareExt?.socModel ?: "Reading...")
@@ -538,19 +561,18 @@ fun DeviceCheckAppRoot() {
                             nativeAntiTamper.lines().forEach { line ->
                                 val parts = line.split("=", limit = 2)
                                 if (parts.size == 2) MetricRow(parts[0], parts[1])
-                                else Text(text = line, fontSize = 11.sp, color = TextMuted, fontFamily = FontFamily.Monospace)
+                                else Text(text = line, fontSize = 10.5.sp, color = TextMuted, fontFamily = FontFamily.Monospace)
                             }
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(20.dp))
             }
         }
     }
 }
 
-// Reusable Clean UI Components
 @Composable
 fun CleanCard(
     title: String,
@@ -558,12 +580,12 @@ fun CleanCard(
     content: @Composable ColumnScope.() -> Unit
 ) {
     Surface(
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(12.dp),
         color = CardSurface,
         border = BorderStroke(1.dp, BorderSubtle),
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(15.dp)) {
+        Column(modifier = Modifier.padding(13.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -571,26 +593,33 @@ fun CleanCard(
             ) {
                 Text(
                     text = title,
-                    fontSize = 12.5.sp,
+                    fontSize = 11.5.sp,
                     fontWeight = FontWeight.Bold,
                     color = AccentBlue,
-                    letterSpacing = 0.5.sp
+                    letterSpacing = 0.4.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp)
                 )
                 Surface(
-                    shape = RoundedCornerShape(6.dp),
+                    shape = RoundedCornerShape(5.dp),
                     color = CardSurface,
                     border = BorderStroke(1.dp, BorderSubtle)
                 ) {
                     Text(
                         text = badge,
                         color = TextMuted,
-                        fontSize = 10.sp,
+                        fontSize = 9.sp,
                         fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp)
+                        maxLines = 1,
+                        softWrap = false,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(11.dp))
+            Spacer(modifier = Modifier.height(9.dp))
             content()
         }
     }
@@ -608,18 +637,19 @@ fun MetricRow(label: String, value: String) {
                 clipboard.setPrimaryClip(clip)
                 Toast.makeText(context, "Copied: $label", Toast.LENGTH_SHORT).show()
             }
-            .padding(vertical = 4.dp)
+            .padding(vertical = 3.dp)
     ) {
         Text(
             text = label,
-            fontSize = 11.5.sp,
+            fontSize = 10.5.sp,
             color = TextMuted,
             fontWeight = FontWeight.Medium
         )
+        Spacer(modifier = Modifier.height(1.dp))
         Text(
             text = value,
-            fontSize = 13.sp,
-            lineHeight = 18.sp,
+            fontSize = 12.sp,
+            lineHeight = 16.5.sp,
             color = TextPrimary,
             fontFamily = FontFamily.Monospace
         )
@@ -632,13 +662,13 @@ fun AxisMeter(label: String, value: Float) {
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .background(BgDark, RoundedCornerShape(8.dp))
-            .padding(horizontal = 16.dp, vertical = 9.dp)
+            .padding(horizontal = 14.dp, vertical = 7.dp)
     ) {
-        Text(text = label, fontSize = 10.sp, color = TextMuted, fontWeight = FontWeight.Bold)
-        Spacer(modifier = Modifier.height(3.dp))
+        Text(text = label, fontSize = 9.5.sp, color = TextMuted, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(2.dp))
         Text(
             text = "%.2f".format(value),
-            fontSize = 14.sp,
+            fontSize = 13.5.sp,
             color = AccentGreen,
             fontFamily = FontFamily.Monospace,
             fontWeight = FontWeight.Bold
