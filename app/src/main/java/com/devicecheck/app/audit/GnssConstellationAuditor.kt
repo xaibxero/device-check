@@ -7,6 +7,7 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Build
+import android.os.Handler
 import android.os.Looper
 
 data class GnssTelemetry(
@@ -32,20 +33,23 @@ object GnssConstellationAuditor {
         latestLocation = location
     }
 
+    private val gnssCallback = object : GnssStatus.Callback() {
+        override fun onSatelliteStatusChanged(status: GnssStatus) {
+            latestGnssStatus = status
+        }
+    }
+
     @SuppressLint("MissingPermission")
     fun startHardwareGps(context: Context) {
         if (isGpsActive) return
-        val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
 
         try {
-            // 1. Register Satellite Status Callback
-            lm.registerGnssStatusCallback(object : GnssStatus.Callback() {
-                override fun onSatelliteStatusChanged(status: GnssStatus) {
-                    latestGnssStatus = status
-                }
-            }, null)
+            val mainHandler = Handler(Looper.getMainLooper())
 
-            // 2. Request Location Updates to wake up the physical GPS receiver
+            // Always provide main looper handler to prevent "Calling thread has no looper" crash
+            lm.registerGnssStatusCallback(gnssCallback, mainHandler)
+
             if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
                 lm.requestLocationUpdates(
                     LocationManager.GPS_PROVIDER,
@@ -56,18 +60,18 @@ object GnssConstellationAuditor {
                 )
                 isGpsActive = true
             }
-        } catch (_: SecurityException) {}
+        } catch (_: Throwable) {}
     }
 
     @SuppressLint("MissingPermission")
     fun audit(context: Context): GnssTelemetry {
         startHardwareGps(context)
 
-        val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
         val loc = latestLocation ?: try {
-            lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-        } catch (_: SecurityException) { null }
+            lm?.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                ?: lm?.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+        } catch (_: Throwable) { null }
 
         val isMock = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             loc?.isMock == true
@@ -84,18 +88,20 @@ object GnssConstellationAuditor {
 
         if (status != null) {
             for (i in 0 until inView) {
-                if (status.usedInFix(i)) usedCount++
-                totalSnr += status.getCn0DbHz(i)
-                constellations.add(
-                    when (status.getConstellationType(i)) {
-                        GnssStatus.CONSTELLATION_GPS -> "GPS (USA)"
-                        GnssStatus.CONSTELLATION_GLONASS -> "GLONASS (RU)"
-                        GnssStatus.CONSTELLATION_GALILEO -> "Galileo (EU)"
-                        GnssStatus.CONSTELLATION_BEIDOU -> "BeiDou (CN)"
-                        GnssStatus.CONSTELLATION_QZSS -> "QZSS (JP)"
-                        else -> "Other"
-                    }
-                )
+                try {
+                    if (status.usedInFix(i)) usedCount++
+                    totalSnr += status.getCn0DbHz(i)
+                    constellations.add(
+                        when (status.getConstellationType(i)) {
+                            GnssStatus.CONSTELLATION_GPS -> "GPS (USA)"
+                            GnssStatus.CONSTELLATION_GLONASS -> "GLONASS (RU)"
+                            GnssStatus.CONSTELLATION_GALILEO -> "Galileo (EU)"
+                            GnssStatus.CONSTELLATION_BEIDOU -> "BeiDou (CN)"
+                            GnssStatus.CONSTELLATION_QZSS -> "QZSS (JP)"
+                            else -> "Other"
+                        }
+                    )
+                } catch (_: Throwable) {}
             }
         }
 
