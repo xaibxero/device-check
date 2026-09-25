@@ -31,6 +31,8 @@ import com.devicecheck.app.audit.CellularRadioAuditor
 import com.devicecheck.app.audit.CellularTelemetry
 import com.devicecheck.app.audit.GnssConstellationAuditor
 import com.devicecheck.app.audit.GnssTelemetry
+import com.devicecheck.app.audit.IdentityAuditReport
+import com.devicecheck.app.audit.IdentityAuditor
 import com.devicecheck.app.audit.RootHardwareGroundTruth
 import com.devicecheck.app.audit.RootProbeEngine
 import com.devicecheck.app.nativebridge.NativeProbeCore
@@ -68,7 +70,7 @@ fun DeviceCheckAppRoot() {
     var nativeClocks by remember { mutableStateOf("Auditing...") }
     var cellular by remember { mutableStateOf<CellularTelemetry?>(null) }
     var gnss by remember { mutableStateOf<GnssTelemetry?>(null) }
-    var ssaid by remember { mutableStateOf("Reading...") }
+    var identityReport by remember { mutableStateOf<IdentityAuditReport?>(null) }
     var rootGroundTruth by remember { mutableStateOf<RootHardwareGroundTruth?>(null) }
 
     fun refreshTelemetry() {
@@ -81,7 +83,7 @@ fun DeviceCheckAppRoot() {
                 nativeClocks = NativeProbeCore.auditClocks()
                 cellular = CellularRadioAuditor.audit(context)
                 gnss = GnssConstellationAuditor.audit(context)
-                ssaid = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "N/A"
+                identityReport = IdentityAuditor.audit(context)
                 rootGroundTruth = RootProbeEngine.probeGroundTruth()
             }
         }
@@ -216,9 +218,15 @@ fun DeviceCheckAppRoot() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 2. Hardware Serials & Silicon Storage
+            // 2. Hardware Serials, GSF & Silicon Storage Card
             AuditCard(title = "RAW SILICON, STORAGE & HARDWARE SERIALS", badge = "CROSS-LAYER") {
-                MetricRow("OS Android ID (SSAID)", ssaid)
+                identityReport?.let { id ->
+                    MetricRow("OS Android ID (SSAID)", id.ssaid)
+                    MetricRow("Google Services (GSF) ID", "${id.gsfId} [${id.gsfStatus}]")
+                } ?: run {
+                    MetricRow("OS Android ID (SSAID)", "Auditing...")
+                    MetricRow("Google Services (GSF) ID", "Auditing...")
+                }
                 MetricRow("Storage Hardware Serial", rootGroundTruth?.rawStorageSerial ?: "Querying...")
                 nativeSerials.lines().forEach { line ->
                     val parts = line.split("=", limit = 2)
