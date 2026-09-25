@@ -12,7 +12,8 @@ data class RootHardwareGroundTruth(
     val rawStorageSerial: String,
     val selinuxMode: String,
     val rootGsfId: String = "N/A",
-    val rootSsaid: String = "N/A"
+    val rootSsaid: String = "N/A",
+    val rootSerialNo: String = "N/A"
 )
 
 object RootProbeEngine {
@@ -43,56 +44,67 @@ object RootProbeEngine {
                 rawStorageSerial = "SELinux blocked",
                 selinuxMode = "Enforcing (Sandbox)",
                 rootGsfId = "N/A (Root required)",
-                rootSsaid = "N/A (Root required)"
+                rootSsaid = "N/A (Root required)",
+                rootSerialNo = "RESTRICTED"
             )
         }
 
-        // Query raw IMEI via IPC binder service call to iphonesubinfo
-        val (_, imeiRaw) = executeSuCommand("service call iphonesubinfo 1")
-        val parsedImei = parseBinderImei(imeiRaw)
+        // 1. Query Hardware IMEI via multiple root methods
+        var imeiOut = ""
+        val (_, cmdPhone) = executeSuCommand("cmd phone get-device-id 2>/dev/null")
+        if (cmdPhone.isNotBlank() && !cmdPhone.contains("Exception") && !cmdPhone.contains("not found")) {
+            imeiOut = cmdPhone.lineSequence().firstOrNull { it.trim().all { c -> c.isDigit() } } ?: cmdPhone.trim()
+        }
+        if (imeiOut.isBlank()) {
+            val (_, dumpsysImei) = executeSuCommand("dumpsys iphonesubinfo 2>/dev/null | grep -i 'Device ID' | head -n 1")
+            if (dumpsysImei.contains("=")) imeiOut = dumpsysImei.substringAfter("=").trim()
+        }
+        if (imeiOut.isBlank()) {
+            val (_, propImei) = executeSuCommand("getprop persist.radio.imei 2>/dev/null || getprop ro.ril.oem.imei1 2>/dev/null")
+            imeiOut = propImei.trim()
+        }
 
-        // Read raw sysfs battery uevent bypass SELinux
-        val (_, batteryUevent) = executeSuCommand("cat /sys/class/power_supply/battery/uevent")
+        // 2. Read battery PMIC uevent (already verified working)
+        val (_, batteryUevent) = executeSuCommand("cat /sys/class/power_supply/battery/uevent 2>/dev/null")
         val parsedBattery = parseUeventBattery(batteryUevent)
 
-        // Read raw block device serial
-        val (_, storageSerial) = executeSuCommand("cat /sys/block/sda/device/serial 2>/dev/null || cat /sys/block/mmcblk0/device/cid 2>/dev/null")
-
-        // Read SELinux enforcement state
-        val (_, selinux) = executeSuCommand("getenforce")
-
-        // Query GSF ID directly from Google Play Services database
-        val (_, rootGsfRaw) = executeSuCommand(
-            "sqlite3 /data/data/com.google.android.gsf/databases/gservices.db \"SELECT value FROM main WHERE name='android_id';\" 2>/dev/null"
+        // 3. Read Hardware UFS / eMMC serial and system serial number
+        val (_, storageSerial) = executeSuCommand(
+            "cat /sys/block/sda/device/serial 2>/dev/null || cat /sys/block/bootdevice/device/serial 2>/dev/null || cat /sys/block/mmcblk0/device/cid 2>/dev/null"
         )
-        val rootGsfHex = rootGsfRaw.trim().toLongOrNull()?.let { java.lang.Long.toHexString(it).uppercase() } ?: "N/A"
+        val (_, rootSerial) = executeSuCommand("getprop ro.serialno 2>/dev/null || getprop ro.boot.serialno 2>/dev/null")
 
-        // Query raw SSAID entry for our package from system settings XML
+        // 4. Read SELinux enforcement mode
+        val (_, selinux) = executeSuCommand("getenforce 2>/dev/null")
+
+        // 5. Query GSF ID via native Android content command (no sqlite3 needed)
+        val (_, contentGsf) = executeSuCommand(
+            "content query --uri content://com.google.android.gsf.gservices --projection value --where \"name='android_id'\" 2>/dev/null"
+        )
+        val parsedGsf = parseContentGsf(contentGsf)
+
+        // 6. Query raw SSAID entry from settings XML
         val (_, xmlSsaid) = executeSuCommand(
             "grep 'name=\"android_id\"' /data/system/users/0/settings_ssaid.xml 2>/dev/null | grep 'com.devicecheck.app' | sed -n 's/.*value=\"\\([^\"]*\\)\".*/\\1/p'"
         )
 
         RootHardwareGroundTruth(
             isRootAvailable = true,
-            rootImei = parsedImei.ifBlank { "Unreadable via IPC dump" },
+            rootImei = imeiOut.ifBlank { "Restricted by modern RIL" },
             rawBatteryUevent = parsedBattery.ifBlank { "Node inaccessible" },
-            rawStorageSerial = storageSerial.ifBlank { "N/A" },
+            rawStorageSerial = storageSerial.trim().ifBlank { "N/A" },
             selinuxMode = selinux.ifBlank { "Enforcing" },
-            rootGsfId = rootGsfHex,
-            rootSsaid = xmlSsaid.trim().ifBlank { "N/A" }
+            rootGsfId = parsedGsf,
+            rootSsaid = xmlSsaid.trim().ifBlank { "N/A" },
+            rootSerialNo = rootSerial.trim().ifBlank { "RESTRICTED" }
         )
     }
 
-    private fun parseBinderImei(raw: String): String {
-        if (raw.isBlank() || !raw.contains("Result: Parcel(")) return ""
-        val hexChars = StringBuilder()
-        val regex = Regex("'([^']+)'")
-        val matches = regex.findAll(raw)
-        for (m in matches) {
-            hexChars.append(m.groupValues[1])
-        }
-        val cleaned = hexChars.toString().replace(".", "").trim()
-        return if (cleaned.length >= 14) cleaned else raw.take(40)
+    private fun parseContentGsf(raw: String): String {
+        // Output format: Row: 0 value=1234567890123456
+        if (raw.isBlank() || !raw.contains("value=")) return "N/A"
+        val decStr = raw.substringAfter("value=").trim().lines().firstOrNull()?.trim() ?: return "N/A"
+        return decStr.toLongOrNull()?.let { java.lang.Long.toHexString(it).uppercase() } ?: decStr
     }
 
     private fun parseUeventBattery(uevent: String): String {
