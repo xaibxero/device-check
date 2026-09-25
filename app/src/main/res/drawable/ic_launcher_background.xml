@@ -4,50 +4,50 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Dark Titanium Base -->
+    <!-- Deep Titanium Base -->
     <path
-        android:fillColor="#090D16"
+        android:fillColor="#070A12"
         android:pathData="M0,0h108v108h-108z" />
 
-    <!-- Outer Structural Hexagonal Shield -->
+    <!-- Safe-Zone Hexagonal Guard (Radius 36dp) -->
     <path
-        android:pathData="M54,14 L88,33.5 L88,74.5 L54,94 L20,74.5 L20,33.5 Z"
-        android:strokeWidth="1.5"
+        android:pathData="M54,22 L82,38 L82,70 L54,86 L26,70 L26,38 Z"
+        android:strokeWidth="1.2"
         android:strokeColor="#1E293B" />
 
     <!-- Radar Scanning Rings -->
     <path
-        android:pathData="M54,26 A28,28 0 1,0 54,82 A28,28 0 1,0 54,26"
+        android:pathData="M54,30 A24,24 0 1,0 54,78 A24,24 0 1,0 54,30"
         android:strokeWidth="1"
         android:strokeColor="#1E293B" />
     <path
-        android:pathData="M54,36 A18,18 0 1,0 54,72 A18,18 0 1,0 54,36"
+        android:pathData="M54,38 A16,16 0 1,0 54,70 A16,16 0 1,0 54,38"
         android:strokeWidth="1.2"
         android:strokeColor="#38BDF8"
         android:strokeAlpha="0.35" />
 
-    <!-- Circuit Bus Lines -->
+    <!-- Circuit Bus Traces (Centered in Safe-Zone) -->
     <path
-        android:pathData="M54,14 L54,36 M54,72 L54,94"
+        android:pathData="M54,22 L54,38 M54,70 L54,86"
         android:strokeWidth="1.5"
         android:strokeColor="#38BDF8"
-        android:strokeAlpha="0.6" />
+        android:strokeAlpha="0.7" />
     <path
-        android:pathData="M20,54 L36,54 M72,54 L88,54"
+        android:pathData="M26,54 L38,54 M70,54 L82,54"
         android:strokeWidth="1.5"
         android:strokeColor="#38BDF8"
-        android:strokeAlpha="0.6" />
+        android:strokeAlpha="0.7" />
 
     <!-- Diagonal Traces -->
     <path
-        android:pathData="M32,32 L42,42 M76,76 L66,66 M76,32 L66,42 M32,76 L42,66"
-        android:strokeWidth="1.2"
+        android:pathData="M35,35 L43,43 M73,73 L65,65 M73,35 L65,43 M35,73 L43,65"
+        android:strokeWidth="1"
         android:strokeColor="#1E293B" />
 
-    <!-- Central Micro-Core Silicon Die -->
+    <!-- Silicon Processor Die -->
     <path
-        android:fillColor="#111726"
-        android:pathData="M44,44h20v20h-20z"
+        android:fillColor="#0F172A"
+        android:pathData="M45,45h18v18h-18z"
         android:strokeWidth="1.5"
         android:strokeColor="#38BDF8" />
 
@@ -59,14 +59,14 @@
     <!-- Node Terminals -->
     <path
         android:fillColor="#38BDF8"
-        android:pathData="M54,12 A2,2 0 1,0 54,16 A2,2 0 1,0 54,12" />
+        android:pathData="M54,20 A2,2 0 1,0 54,24 A2,2 0 1,0 54,20" />
     <path
         android:fillColor="#38BDF8"
-        android:pathData="M54,92 A2,2 0 1,0 54,96 A2,2 0 1,0 54,92" />
+        android:pathData="M54,84 A2,2 0 1,0 54,88 A2,2 0 1,0 54,84" />
     <path
         android:fillColor="#38BDF8"
-        android:pathData="M18,54 A2,2 0 1,0 22,54 A2,2 0 1,0 18,54" />
+        android:pathData="M24,54 A2,2 0 1,0 28,54 A2,2 0 1,0 24,54" />
     <path
         android:fillColor="#38BDF8"
-        android:pathData="M86,54 A2,2 0 1,0 90,54 A2,2 0 1,0 86,54" />
+        android:pathData="M80,54 A2,2 0 1,0 84,54 A2,2 0 1,0 80,54" />
 </vector>
