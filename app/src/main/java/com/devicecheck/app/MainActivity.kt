@@ -45,7 +45,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        GnssConstellationAuditor.registerGnssListener(this)
+        GnssConstellationAuditor.startHardwareGps(this)
 
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
@@ -198,7 +198,7 @@ fun DeviceCheckAppRoot() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 1. Dual-Layer Telephony Matrix
+            // 1. Telephony & Cellular Matrix
             cellular?.let { cell ->
                 AuditCard(title = "TELEPHONY & BASEBAND IDENTIFIERS", badge = cell.dataNetworkType) {
                     MetricRow("App Sandbox IMEI 1", cell.imei1)
@@ -216,7 +216,7 @@ fun DeviceCheckAppRoot() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 2. Hardware Serials, GSF & Silicon Storage Card
+            // 2. Hardware Serials, GSF & Silicon Storage
             AuditCard(title = "RAW SILICON, STORAGE & HARDWARE SERIALS", badge = "CROSS-LAYER") {
                 identityReport?.let { id ->
                     MetricRow("OS Android ID (SSAID)", id.ssaid)
@@ -225,8 +225,9 @@ fun DeviceCheckAppRoot() {
                     MetricRow("OS Android ID (SSAID)", "Auditing...")
                     MetricRow("Google Services (GSF) ID", "Auditing...")
                 }
-                MetricRow("Root GSF ID (Database)", rootGroundTruth?.rootGsfId ?: "Querying...")
+                MetricRow("Root GSF ID (Service Query)", rootGroundTruth?.rootGsfId ?: "Querying...")
                 MetricRow("Root Settings SSAID (XML)", rootGroundTruth?.rootSsaid ?: "Querying...")
+                MetricRow("Root Hardware Serial", rootGroundTruth?.rootSerialNo ?: "Querying...")
                 MetricRow("Storage Hardware Serial", rootGroundTruth?.rawStorageSerial ?: "Querying...")
                 nativeSerials.lines().forEach { line ->
                     val parts = line.split("=", limit = 2)
@@ -247,14 +248,14 @@ fun DeviceCheckAppRoot() {
                     MetricRow("Coordinates", "Lat: ${"%.5f".format(g.latitude)}, Lng: ${"%.5f".format(g.longitude)} (±${g.accuracyMeters}m)")
                     MetricRow("Altitude", "${"%.2f".format(g.altitudeMeters)}m")
                     MetricRow("Satellites (Fix / View)", "${g.satellitesUsedInFix} used / ${g.satellitesInView} in view")
-                    MetricRow("Active Constellations", if (g.constellationsActive.isEmpty()) "Acquiring satellites (ensure GPS is ON)..." else g.constellationsActive.joinToString(" • "))
+                    MetricRow("Active Constellations", if (g.constellationsActive.isEmpty()) "Acquiring satellite constellation..." else g.constellationsActive.joinToString(" • "))
                     MetricRow("Avg Carrier Noise (C/N0)", "${"%.1f".format(g.averageSnrNoiseDbHz)} dB-Hz")
                 }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 4. Kernel Network & Socket Routing
+            // 4. Kernel Network Routes
             AuditCard(title = "KERNEL NETWORK ROUTES & ARP TABLE", badge = "SOCKET LAYER") {
                 nativeNetwork.lines().forEach { line ->
                     val parts = line.split("=", limit = 2)
@@ -272,7 +273,7 @@ fun DeviceCheckAppRoot() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 6. Anti-Tamper & In-Memory Hooks
+            // 6. Anti-Tamper & Memory Maps
             AuditCard(title = "ANTI-TAMPER & MEMORY MAP SCAN", badge = "PROCFS") {
                 nativeAntiTamper.lines().forEach { line ->
                     val parts = line.split("=", limit = 2)
