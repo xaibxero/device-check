@@ -13,15 +13,10 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.media.AudioDeviceInfo
-import android.media.AudioManager
-import android.net.wifi.WifiInfo
-import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
-import android.view.InputDevice
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -62,102 +57,6 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-
-// Embedded Hardware Extensions Data Model
-data class HardwareExtensionsReport(
-    val socManufacturer: String,
-    val socModel: String,
-    val wifiStandard: String,
-    val wifiFrequencyMhz: String,
-    val wifiLinkSpeed: String,
-    val inputDevices: List<String>,
-    val audioOutputTopology: List<String>,
-    val audioInputTopology: List<String>
-)
-
-// Embedded Zero-Permission Hardware Extensions Auditor
-object HardwareExtensionsAuditor {
-    fun audit(context: Context): HardwareExtensionsReport {
-        val socVendor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            Build.SOC_MANUFACTURER
-        } else "Qualcomm / Legacy"
-
-        val socChip = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            Build.SOC_MODEL
-        } else "Snapdragon / Legacy"
-
-        val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-        val wifiInfo: WifiInfo? = try { wm?.connectionInfo } catch (_: Throwable) { null }
-
-        val standardStr = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && wifiInfo != null) {
-            when (wifiInfo.wifiStandard) {
-                6 -> "Wi-Fi 6 / 6E (802.11ax)"
-                5 -> "Wi-Fi 5 (802.11ac)"
-                4 -> "Wi-Fi 4 (802.11n)"
-                7, 8 -> "Wi-Fi 7 (802.11be)"
-                1 -> "Legacy (802.11a/b/g)"
-                else -> "Standard #${wifiInfo.wifiStandard}"
-            }
-        } else "802.11 Multi-Band"
-
-        val freqMhz = wifiInfo?.frequency ?: 0
-        val bandStr = when {
-            freqMhz in 2400..2499 -> "2.4 GHz ($freqMhz MHz)"
-            freqMhz in 4900..5900 -> "5.0 GHz ($freqMhz MHz)"
-            freqMhz > 5925 -> "6.0 GHz ($freqMhz MHz - Wi-Fi 6E/7)"
-            else -> if (freqMhz > 0) "$freqMhz MHz" else "Radio Standby"
-        }
-
-        val linkSpeedStr = if (wifiInfo != null && wifiInfo.linkSpeed > 0) {
-            "${wifiInfo.linkSpeed} ${WifiInfo.LINK_SPEED_UNITS}"
-        } else "Standby"
-
-        val inputDeviceNames = mutableListOf<String>()
-        try {
-            val deviceIds = InputDevice.getDeviceIds()
-            for (id in deviceIds) {
-                val dev = InputDevice.getDevice(id) ?: continue
-                if (!dev.isVirtual) {
-                    inputDeviceNames.add("${dev.name} [Vendor: 0x${"%04x".format(dev.vendorId)} Product: 0x${"%04x".format(dev.productId)}]")
-                }
-            }
-        } catch (_: Throwable) {}
-
-        val audioOutputs = mutableListOf<String>()
-        val audioInputs = mutableListOf<String>()
-        try {
-            val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-            if (am != null) {
-                val devices = am.getDevices(AudioManager.GET_DEVICES_ALL)
-                for (dev in devices) {
-                    val name = dev.productName.toString()
-                    val typeStr = when (dev.type) {
-                        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Built-in Stereo Speaker"
-                        AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "Earpiece Receiver"
-                        AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Built-in Microphone Array"
-                        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "Bluetooth A2DP Sink"
-                        AudioDeviceInfo.TYPE_USB_DEVICE -> "USB Audio Interface"
-                        AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired Headset"
-                        else -> "Type 0x${dev.type}"
-                    }
-                    if (dev.isSink) audioOutputs.add("$typeStr ($name)")
-                    if (dev.isSource) audioInputs.add("$typeStr ($name)")
-                }
-            }
-        } catch (_: Throwable) {}
-
-        return HardwareExtensionsReport(
-            socManufacturer = socVendor,
-            socModel = socChip,
-            wifiStandard = standardStr,
-            wifiFrequencyMhz = bandStr,
-            wifiLinkSpeed = linkSpeedStr,
-            inputDevices = inputDeviceNames.distinct(),
-            audioOutputTopology = audioOutputs.distinct(),
-            audioInputTopology = audioInputs.distinct()
-        )
-    }
-}
 
 class MainActivity : ComponentActivity() {
 
@@ -219,7 +118,7 @@ fun DeviceCheckAppRoot() {
     var accelY by remember { mutableFloatStateOf(0f) }
     var accelZ by remember { mutableFloatStateOf(9.8f) }
 
-    // Event-Driven Battery Receiver
+    // 1. Event-Driven Battery Receiver
     DisposableEffect(context) {
         val bm = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
         val receiver = object : BroadcastReceiver() {
@@ -239,7 +138,7 @@ fun DeviceCheckAppRoot() {
         }
     }
 
-    // Live Accelerometer IMU Listener
+    // 2. Live Accelerometer IMU Listener
     DisposableEffect(Unit) {
         val sm = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
         val accel = sm?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
@@ -257,7 +156,7 @@ fun DeviceCheckAppRoot() {
         onDispose { sm?.unregisterListener(listener) }
     }
 
-    // Live 1000ms Polling Loop (RAM & Hardware Clock)
+    // 3. Live 1000ms Polling Loop (RAM & Hardware Clock)
     LaunchedEffect(Unit) {
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         val memInfo = ActivityManager.MemoryInfo()
@@ -439,7 +338,6 @@ fun DeviceCheckAppRoot() {
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 when (selectedTab) {
-                    // TAB 1: DYNAMIC LIVE DASHBOARD
                     AuditTab.DASHBOARD -> {
                         val ramFraction = if (ramTotalMb > 0) ramUsedMb.toFloat() / ramTotalMb.toFloat() else 0f
                         val animatedRam by animateFloatAsState(targetValue = ramFraction, animationSpec = tween(500), label = "ram")
@@ -502,7 +400,6 @@ fun DeviceCheckAppRoot() {
                         }
                     }
 
-                    // TAB 2: SILICON & HARDWARE CRYPTOGRAPHY
                     AuditTab.SILICON -> {
                         hardwareExt?.let { ext ->
                             CleanCard(title = "SYSTEM ON CHIP (SOC) HARDWARE", badge = "API 31+") {
@@ -534,7 +431,6 @@ fun DeviceCheckAppRoot() {
                         }
                     }
 
-                    // TAB 3: OPTICS, DISPLAY & HARDWARE PERIPHERALS
                     AuditTab.OPTICS_DISPLAY -> {
                         nonRootReport?.let { nr ->
                             CleanCard(title = "CAMERA SILICON & OPTICAL MATRIX", badge = "OPTICS") {
@@ -566,7 +462,6 @@ fun DeviceCheckAppRoot() {
                         }
                     }
 
-                    // TAB 4: NETWORK & RADIO
                     AuditTab.NETWORK_RADIO -> {
                         hardwareExt?.let { ext ->
                             CleanCard(title = "WI-FI PHYSICAL RADIO & GENERATION", badge = "802.11 PHY") {
@@ -608,7 +503,6 @@ fun DeviceCheckAppRoot() {
                         }
                     }
 
-                    // TAB 5: SYSTEM & IDENTITY (FRAMEWORK VS HARDWARE)
                     AuditTab.SYSTEM_IDENTITY -> {
                         CleanCard(title = "FRAMEWORK VS HARDWARE CROSS-EXAMINATION", badge = "COMPARISON") {
                             MetricRow("Declared User-Agent Model", nonRootReport?.defaultUserAgent?.take(75) ?: "Reading...")
@@ -651,7 +545,6 @@ fun DeviceCheckAppRoot() {
     }
 }
 
-// Clean Reusable UI Components
 @Composable
 fun CleanCard(
     title: String,
@@ -753,7 +646,6 @@ private fun formatUptime(ms: Long): String {
     return "%02d:%02d:%02d".format(hrs, min, sec)
 }
 
-// Embedded JSON Snapshot Generator
 private fun generateSnapshotJson(
     nonRootReport: NonRootTrackerReport?,
     identityReport: IdentityAuditReport?,
