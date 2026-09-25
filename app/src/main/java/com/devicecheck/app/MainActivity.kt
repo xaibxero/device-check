@@ -67,20 +67,22 @@ fun DeviceCheckAppRoot() {
 
     fun refreshTelemetry() {
         coroutineScope.launch {
-            withContext(Dispatchers.IO) {
-                nonRootReport = NonRootTrackerAuditor.audit(context)
-                identityReport = IdentityAuditor.audit(context)
-                cellular = CellularRadioAuditor.audit(context)
-                gnss = GnssConstellationAuditor.audit(context)
+            try {
+                withContext(Dispatchers.IO) {
+                    nonRootReport = NonRootTrackerAuditor.audit(context)
+                    identityReport = IdentityAuditor.audit(context)
+                    cellular = CellularRadioAuditor.audit(context)
+                    gnss = GnssConstellationAuditor.audit(context)
 
-                nativeSerials = NativeProbeCore.auditHardwareSerials()
-                nativeNetwork = NativeProbeCore.auditKernelNetwork()
-                nativeBattery = NativeProbeCore.auditBatteryRegisters()
-                nativeAntiTamper = NativeProbeCore.auditAntiTamper()
-                nativeClocks = NativeProbeCore.auditClocks()
+                    nativeSerials = NativeProbeCore.auditHardwareSerials()
+                    nativeNetwork = NativeProbeCore.auditKernelNetwork()
+                    nativeBattery = NativeProbeCore.auditBatteryRegisters()
+                    nativeAntiTamper = NativeProbeCore.auditAntiTamper()
+                    nativeClocks = NativeProbeCore.auditClocks()
 
-                rootGroundTruth = RootProbeEngine.probeGroundTruth()
-            }
+                    rootGroundTruth = RootProbeEngine.probeGroundTruth()
+                }
+            } catch (_: Throwable) {}
         }
     }
 
