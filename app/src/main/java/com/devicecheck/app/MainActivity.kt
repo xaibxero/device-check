@@ -62,7 +62,6 @@ fun DeviceCheckAppRoot() {
 
     var permissionsGranted by remember { mutableStateOf(false) }
 
-    // Telemetry states
     var nativeSerials by remember { mutableStateOf("Auditing...") }
     var nativeNetwork by remember { mutableStateOf("Auditing...") }
     var nativeBattery by remember { mutableStateOf("Auditing...") }
@@ -89,7 +88,6 @@ fun DeviceCheckAppRoot() {
         }
     }
 
-    // Permission dispatcher
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
@@ -167,7 +165,7 @@ fun DeviceCheckAppRoot() {
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Root & Privilege Status Banner
+            // Root Status Banner
             rootGroundTruth?.let { root ->
                 Surface(
                     shape = RoundedCornerShape(14.dp),
@@ -227,6 +225,8 @@ fun DeviceCheckAppRoot() {
                     MetricRow("OS Android ID (SSAID)", "Auditing...")
                     MetricRow("Google Services (GSF) ID", "Auditing...")
                 }
+                MetricRow("Root GSF ID (Database)", rootGroundTruth?.rootGsfId ?: "Querying...")
+                MetricRow("Root Settings SSAID (XML)", rootGroundTruth?.rootSsaid ?: "Querying...")
                 MetricRow("Storage Hardware Serial", rootGroundTruth?.rawStorageSerial ?: "Querying...")
                 nativeSerials.lines().forEach { line ->
                     val parts = line.split("=", limit = 2)
