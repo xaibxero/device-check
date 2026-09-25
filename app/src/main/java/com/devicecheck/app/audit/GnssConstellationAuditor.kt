@@ -4,8 +4,10 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.location.GnssStatus
 import android.location.Location
+import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Build
+import android.os.Looper
 
 data class GnssTelemetry(
     val provider: String,
@@ -23,34 +25,55 @@ data class GnssTelemetry(
 object GnssConstellationAuditor {
 
     private var latestGnssStatus: GnssStatus? = null
+    private var latestLocation: Location? = null
+    private var isGpsActive = false
+
+    private val locationListener = LocationListener { location ->
+        latestLocation = location
+    }
 
     @SuppressLint("MissingPermission")
-    fun registerGnssListener(context: Context) {
+    fun startHardwareGps(context: Context) {
+        if (isGpsActive) return
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+
         try {
+            // 1. Register Satellite Status Callback
             lm.registerGnssStatusCallback(object : GnssStatus.Callback() {
                 override fun onSatelliteStatusChanged(status: GnssStatus) {
                     latestGnssStatus = status
                 }
             }, null)
+
+            // 2. Request Location Updates to wake up the physical GPS receiver
+            if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                lm.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER,
+                    1000L,
+                    0f,
+                    locationListener,
+                    Looper.getMainLooper()
+                )
+                isGpsActive = true
+            }
         } catch (_: SecurityException) {}
     }
 
     @SuppressLint("MissingPermission")
     fun audit(context: Context): GnssTelemetry {
-        val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        var lastLoc: Location? = null
+        startHardwareGps(context)
 
-        try {
-            lastLoc = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val loc = latestLocation ?: try {
+            lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
                 ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-        } catch (_: SecurityException) {}
+        } catch (_: SecurityException) { null }
 
         val isMock = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            lastLoc?.isMock == true
+            loc?.isMock == true
         } else {
             @Suppress("DEPRECATION")
-            lastLoc?.isFromMockProvider == true
+            loc?.isFromMockProvider == true
         }
 
         val status = latestGnssStatus
@@ -79,12 +102,12 @@ object GnssConstellationAuditor {
         val avgSnr = if (inView > 0) totalSnr / inView else 0f
 
         return GnssTelemetry(
-            provider = lastLoc?.provider ?: "NONE",
+            provider = loc?.provider ?: if (isGpsActive) "GPS_ACTIVE_ACQUIRING" else "NONE",
             isMockFlagged = isMock,
-            latitude = lastLoc?.latitude ?: 0.0,
-            longitude = lastLoc?.longitude ?: 0.0,
-            altitudeMeters = lastLoc?.altitude ?: 0.0,
-            accuracyMeters = lastLoc?.accuracy ?: 0f,
+            latitude = loc?.latitude ?: 0.0,
+            longitude = loc?.longitude ?: 0.0,
+            altitudeMeters = loc?.altitude ?: 0.0,
+            accuracyMeters = loc?.accuracy ?: 0f,
             satellitesInView = inView,
             satellitesUsedInFix = usedCount,
             constellationsActive = constellations.toList(),
